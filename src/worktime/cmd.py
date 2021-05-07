@@ -46,15 +46,59 @@ class WorkCmd(cmd2.Cmd):
     '''
     def __init__(self, cmd_parser: CmdParser) -> None:
         super().__init__()
+        self.prompt = cmd_parser.define_prompt()
         self.cmd_parser = cmd_parser
 
     @typechecked
+    def postcmd(self, stop: bool, line: str) -> bool:
+        """Hook method executed just after a command dispatch is finished.
+
+        :param stop: if True, the command has indicated the application should exit
+        :param line: the command line text for this command
+        :return: if this is True, the application will exit after this command and the postloop() will run
+        """
+        self.prompt = self.cmd_parser.define_prompt()
+        return stop
+
+    @typechecked
+    def feedback(self, msg: str) -> None:
+        """Wraps pfeedback, adds color"""
+        self.pfeedback(ansi.style(msg, fg='bright_black'))
+
+    @typechecked
+    def print_output(self, cmd_res: dict) -> None:
+        # Dictionaries are ordered in recent Python versions
+        for item, func in {"output": self.poutput, "error": self.perror, "notify": self.feedback, "warning": self.pwarning}.items():
+            if item in cmd_res and cmd_res[item] is not None:
+                func(cmd_res[item])
+
+
+    @typechecked
     def do_stats(self, args: cmd2.parsing.Statement) -> None:
-        '''
+        r'''
         Process a given stats command.
+
+        Possible usage: 
+
+            # Known time range string
+            stats [today|yesterday|lastweek|thisweek]
+            
+            # From an absolute date/time point:
+            stats from 8:00
+            stats from 2010-04-10_8:00
+
+            # From a date/time relative to today (beginning of the day)
+            stats from [+-][\d+]w[\d+]d
+
+            # From a date/time relative to today (from current time)
+            stats from [+-][\d+]w[\d+]d[\d+]h
+    
+            # From a date/time for a given duration
+            stats from [from_expression] for [\d+]w[\d+]d[\d+]h
+
         '''
         ret = self.cmd_parser.parse_cmd("stats", args.split(" "))
-        self.poutput(ret)
+        self.print_output(ret)
 
     @staticmethod
     @typechecked
@@ -89,9 +133,28 @@ class WorkCmd(cmd2.Cmd):
     def do_edit(self, args: cmd2.parsing.Statement) -> None :
         '''
         Process an edit command
+
+        Possible usage:
+
+            # Change project attribution for a given record. (Record id is show by the show command)
+            edit id <record_id> project <project_name>
+
+            # Change record start date/time with absolute date/time
+            edit id <record_id> from 8:00
+            edit id <record_id> from 2010-04-10_8:00
+
+            # Shift record start date/time with relative date/time
+            edit id <record_id> from +1h
+
+            # Shift record end date/time with relative date/time
+            edit id <record_id> to +1h
+
+            # Shift complete record by 1h
+            edit id <record_id> from +1h to +1h
+
         '''
         ret = self.cmd_parser.parse_cmd("edit", args.split(" "))
-        self.poutput(ret)
+        self.print_output(ret)
 
     @typechecked
     def complete_edit(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
@@ -124,9 +187,15 @@ class WorkCmd(cmd2.Cmd):
     def do_rm(self, args: cmd2.parsing.Statement) -> None:
         '''
         Process a rm command
+
+        Possible usage
+
+            # Delete records 1, 2, 3, and 4
+            rm 1 2 3 4
+
         '''
         ret = self.cmd_parser.parse_cmd("rm", args.split(" "))
-        self.poutput(ret)
+        self.print_output(ret)
 
     @typechecked
     def complete_rm(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
@@ -138,12 +207,31 @@ class WorkCmd(cmd2.Cmd):
 
     @typechecked
     def do_show(self, args: cmd2.parsing.Statement) -> None:
-        '''
+        r'''
         Process a show command        
+
+        Possible usage: 
+
+            # Known time range string
+            show [today|yesterday|lastweek|thisweek]
+            
+            # From an absolute date/time point:
+            show from 8:00
+            show from 2010-04-10_8:00
+
+            # From a date/time relative to today (beginning of the day)
+            show from [+-][\d+]w[\d+]d[\d+]h
+
+            # From a date/time relative to today (from current time)
+            show from [+-][\d+]w[\d+]d[\d+]h exact
+
+            # From a date/time for a given duration
+            show from [from_expression] for [\d+]w[\d+]d[\d+]h
+
         '''
         #print("Executing: show {}".format(args))
         ret = self.cmd_parser.parse_cmd("show",  args.split(" "))
-        self.poutput(ret)
+        self.print_output(ret)
 
     @typechecked
     def complete_show(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
@@ -172,12 +260,39 @@ class WorkCmd(cmd2.Cmd):
     @typechecked
     def do_work(self, args: cmd2.parsing.Statement) -> None:
         '''
-        Process a work command
+        Process a work command.
+
+        Creates a new work record. That record can be either opened (in progress) or
+        closed if a duration (argument `for`) was provided.
+
+        When creating a record, the following arguments can be provided:
+        - on <project_name>, the project being worked on.
+        - for <duration> the duration of the record. This closes the report.
+        - at <date/time> the start time of the record.
+
+        If a record is opened (no end date/time), it will be closed automatically when a new
+        work entry is added.
+        Otherwise, a work record can be closed using `work done`.
+
+        Possible usage:
+            # Work on something, but project is unknown right now (ie arrived at work)
+            work
+
+            # This must be terminated by specifying the project on which one worked using:
+            work done on <project_name>
+
+            # Extra arguments for work (all optionals):
+            work on <project_name> at <date/time> for <duration> 
+            # Example:
+            work on Project1 at 8:00 for 1h
+
+
+
         '''
 
         #print("Executing: work: {}".format(args))
         ret = self.cmd_parser.parse_cmd("work",  args.split(" "))
-        self.poutput(ret)
+        self.print_output(ret)
 
     @typechecked
     def complete_work(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
@@ -191,36 +306,57 @@ class WorkCmd(cmd2.Cmd):
         last_option = self.last_option(line, begidx, endidx)
         #self.poutput("last: '{}'".format(last_full_arg))
 
-        if last_option == "done":
-            return []
 
         # Complete values for option "on", "for" etc. from database
         #self.poutput("Last option: {}, begidx: {}, endidx: {}".format(last_option, begidx, endidx))
-        if last_option in self.cmd_parser.work_actions:
+        if last_option in self.cmd_parser.work_actions and self.cmd_parser.work_actions[last_option]["complete"] is not None:
             # Provide options
             all_projects = self.cmd_parser.work_actions[last_option]["complete"]()
+
             projects = [k for k in all_projects
-                        if k.startswith(line[begidx:endidx])
-                        ]
+                        if k.startswith(line[begidx:endidx])]
             return projects
+
 
         # Otherwise suggest options
         work_act = Counter(self.cmd_parser.work_actions.keys())
         prev_args = Counter(line.split(" "))
-        #print(work_act)
-        #print(prev_args)
         if prev_args:
-            return list(work_act - prev_args)
+            avail_options = list(work_act - prev_args)
+            return [k for k in avail_options if k.startswith(line[begidx:endidx])]
         else:
             return self.cmd_parser.work_actions["complete"]
 
     @typechecked
     def do_project(self, args: cmd2.parsing.Statement) -> None:
         '''
-        Execute a project command
+        Execute a project command.
+
+        Allows you to:
+        - show the project list,
+        - add new projects,
+        - delete projects (if not used),
+        - rename projects.
+
+        Possible usage:
+            # get a list of projects
+            project list 
+            
+            # add a new project
+            project add MyProject
+
+            # add a new project as child of another
+            project add MyProject.Subproject1
+
+            # rename a project or a subproject (always identified by ID)
+            project id <project_id> rename NewProjectName
+
+            # delete a project
+            # This is only possible for projects not associated to any records
+            project rm <project_id>
         '''
         ret = self.cmd_parser.parse_cmd("project",  args.split(" "))
-        self.poutput(ret)
+        self.print_output(ret)
 
     @typechecked
     def complete_project(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:

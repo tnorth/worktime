@@ -20,15 +20,15 @@ import sqlite3
 import datetime
 import copy
 
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Union
 
 try:
     from typeguard import typechecked
 except ImportError:
     # typechecked is a no-op
     def typechecked(func):
-        def inner():
-            func()
+        def inner(*args, **kwargs):
+            return func(*args, **kwargs)
         return inner
 
 @typechecked
@@ -49,6 +49,7 @@ class RecordDb:
     def create_db(self) -> None:
         '''Create database if not exists'''
         self.con = sqlite3.connect(self.db_path)
+        self.con.row_factory = sqlite3.Row
         cur = self.con.cursor()
 
         # Categories    
@@ -61,6 +62,8 @@ class RecordDb:
                  """
 
         # Work entries
+        # AUTOINCREMENT prevents the reuse of an id, such that new records will
+        # always have the highest id
         records_db = """
                     CREATE TABLE IF NOT EXISTS records (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,11 +73,20 @@ class RecordDb:
 
                         CONSTRAINT fk_project
                             FOREIGN KEY (project_id)
-                            REFERENCES projects(id)
+                            REFERENCES projects(id),
+                        
+                        CONSTRAINT start_chk CHECK(typeof(start) = 'integer'),
+                        CONSTRAINT end_chk CHECK(typeof(end) = 'integer' OR end = NULL)
+
                     );
                   """
-        for i in (cat_db, records_db):
+        # Add non-assigned project
+        notassigned_proj_req = """INSERT OR IGNORE INTO projects (id, parent, name) VALUES (1, NULL, 'Not assigned')"""
+
+        for i in (cat_db, records_db, notassigned_proj_req):
             cur.execute(i)
+        
+
 
     @typechecked
     def insert_project(self, name: str, parent_id: int=None) -> None:
@@ -148,10 +160,13 @@ class RecordDb:
         return True
 
     @typechecked
-    def format_record(self, res: List) -> List[Tuple]:
+    def format_record(self, res: List, use_project_name=False) -> List[Tuple]:
         recs = []
         for item in res:
-            entry_id, project_id, start, end = item
+            entry_id = item["rid"]
+            project_id = item["name"] if use_project_name else item["pid"]
+            start = item["start"]
+            end = item["end"]
             if start:
                 start = datetime.datetime.fromtimestamp(start)
             if end:
@@ -161,7 +176,7 @@ class RecordDb:
         return recs
 
     @typechecked
-    def update_records_end(self, record_idx: int, end_time: datetime.datetime) -> None:
+    def update_records_end(self, record_idx: List[int], end_time: datetime.datetime) -> None:
         req = """
                 UPDATE records SET end = ? WHERE id = ?
         """
@@ -187,32 +202,55 @@ class RecordDb:
         self.con.commit()
         
     @typechecked
-    def delete_records(self, record_list: List[int]) -> None:
-        req = """DELETE FROM records WHERE id = ?"""
+    def get_records_by_id(self, record_ids: List[int], format: bool=False) -> Union[List[dict], List[Tuple]]:
         cur = self.con.cursor()
-        cur.execute(req, record_list )
-        self.con.commit()
+        # Check which records exist
+        req = """SELECT r.id AS rid, p.id AS pid, p.name, r.start, r.end FROM records r, projects p
+                 WHERE r.project_id = p.id AND r.id IN ("""
+        req += ",".join(["?",] * len(record_ids))
+        req += ")"
+        recs = cur.execute(req, record_ids).fetchall()
+        if format:
+            return self.format_record([dict(k) for k in recs], use_project_name=True)
+        else:
+            return [dict(k) for k in recs]
+
 
     @typechecked
-    def get_overlapping_records(self, time: Optional[datetime.datetime]) -> List[Tuple]:
+    def delete_records(self, record_list: List[int]) -> List[int]:
+        cur = self.con.cursor()
+        # Check which records exist
+        recs = self.get_records_by_id(record_list)
+        # Keep only record id
+        recs = [(k["id"],) for k in recs]
+        req = """DELETE FROM records WHERE id = ?"""
+        cur.executemany(req, recs)
+        self.con.commit()
+        return [k[0] for k in recs]
+
+    @typechecked
+    def get_overlapping_records(self, time: Optional[datetime.datetime], format=True) -> List[Union[Tuple, dict]]:
         if time is None: return []
-        req = """SELECT r.id, p.name, r.start, r.end FROM records r, projects p
+        req = """SELECT r.id AS rid, p.name, r.start, r.end FROM records r, projects p
                  WHERE r.project_id = p.id
                  AND ((r.start < ? AND r.end > ?) OR (r.end IS NULL AND r.start < ?))
                  ORDER BY r.start DESC"""
         cur = self.con.cursor()
         #print("For time: ", time)
         res = cur.execute(req, (to_unixtime(time), ) * 3).fetchall()
-        return self.format_record(res)
+        if format:
+            return self.format_record([dict(k) for k in res], use_project_name=True)
+        else:
+            return [dict(k) for k in res]
 
     @typechecked
-    def get_last_records(self, num: int = 1) -> List[Tuple]:
-        req = """SELECT r.id, p.name, r.start, r.end FROM records r, projects p
+    def get_last_records(self, num: int = 1) -> List[dict]:
+        req = """SELECT p.id AS pid, r.id AS rid, p.name, r.start, r.end FROM records r, projects p
                  WHERE r.project_id = p.id
                  ORDER BY r.start DESC LIMIT ?"""
         cur = self.con.cursor()
         res = cur.execute(req, ("{}".format(num), )).fetchall()
-        return self.format_record(res)
+        return [dict(k) for k in res]
 
     @typechecked
     def get_records(self, start:datetime.date, 
@@ -220,7 +258,7 @@ class RecordDb:
         if not end:
             end = to_unixtime(datetime.datetime.now())
 
-        req = """SELECT r.id, p.id, r.start, r.end FROM records r, projects p
+        req = """SELECT r.id AS rid, p.id AS pid, r.start, r.end FROM records r, projects p
                  WHERE r.project_id = p.id
                  AND r.start >= ?
                  AND r.start <= ?
@@ -232,7 +270,17 @@ class RecordDb:
         start, end = to_unixtime(start), \
                      to_unixtime(end)
         res = cur.execute(req, (start, end)).fetchall()
-        return self.format_record(res)
+        return self.format_record([dict(k) for k in res])
+
+    @typechecked
+    def get_ongoing_projects(self) -> List[dict]:
+        req = """SELECT r.id AS rid, p.id AS pid, r.start, r.end FROM records r, projects p
+                 WHERE r.project_id = p.id AND r.end IS NULL"""
+        cur = self.con.cursor()
+        res = cur.execute(req).fetchall()
+
+        return [dict(k) for k in res]
+
 
     @typechecked
     def get_project_id(self, project_id: int) -> List[Tuple]:
@@ -242,22 +290,23 @@ class RecordDb:
         return project
 
     @typechecked
-    def get_projects(self) -> List[Tuple]:
-        req = """SELECT id, parent, name FROM projects"""
+    def get_projects(self) -> List[dict]:
+        req = """SELECT id AS pid, parent, name FROM projects"""
         cur = self.con.cursor()
         projects = cur.execute(req).fetchall()
-        return projects
+        return [dict(k) for k in projects]
 
     @typechecked
-    def get_records_for_projects(self, project_ids: List[int]) -> List[Tuple]:
-        req = """SELECT id FROM records WHERE project_id IN (?)"""
+    def get_records_for_projects(self, project_ids: List[int]) -> List[dict]:
         cur = self.con.cursor()
-        proj_ids = ", ".join([str(k) for k in project_ids])
-        projects = cur.execute(req, proj_ids).fetchall()
-        return projects
+        req = """SELECT id AS pid FROM records WHERE project_id IN ("""
+        req += ", ".join(["?",] * len(project_ids))
+        req += ")"
+        projects = cur.execute(req, project_ids).fetchall()
+        return [dict(k) for k in projects]
 
     @typechecked
-    def get_period_stats(self, start: datetime.datetime, end: Optional[datetime.datetime]) -> List[Tuple]:
+    def get_period_stats(self, start: datetime.datetime, end: Optional[datetime.datetime]) -> List[dict]:
         '''
         Count the number of hour per project in the specified period.
         Also report stats per project
@@ -265,7 +314,7 @@ class RecordDb:
         if not end:
             end = to_unixtime(datetime.datetime.now())
 
-        req = """SELECT r.project_id, p.name, SUM(r.end - r.start) AS duration FROM records r, projects p
+        req = """SELECT r.project_id AS pid, p.name, SUM(r.end - r.start) AS duration FROM records r, projects p
                  WHERE r.project_id = p.id
                  AND r.start >= ?
                  AND r.end <= ?
@@ -276,7 +325,7 @@ class RecordDb:
         start, end = to_unixtime(start), \
                      to_unixtime(end)
         res = cur.execute(req, (start, end)).fetchall()
-        return res
+        return [dict(k) for k in res]
 
     @typechecked
     def get_project_tree(self) -> Tuple[dict, dict, dict, dict]:
@@ -376,8 +425,11 @@ def pretty(d, indent=0):
 
 
 if __name__ == "__main__":
-    db = RecordDb()
+    db = RecordDb(db_path="/home/tnorth/personal/worktime/work.db")
     db.create_db()
+    db.get_ongoing_projects()
+    import sys
+    sys.exit(0)
     tree_s, tree_n, tree_flat, tree_flat_rev = db.get_project_tree()
     print("TREE_S")
     pretty(tree_s)

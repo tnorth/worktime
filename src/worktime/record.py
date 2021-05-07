@@ -27,22 +27,34 @@ from enum import Enum
 import datetime
 import copy
 import re
+import math
 from natsort import natsorted, humansorted
+from typing import Optional, Tuple, List, Union
+from collections.abc import Mapping, Sequence
 
-import worktime.db
+import worktime.db as db
+
+try:
+    from typeguard import typechecked
+except ImportError:
+    # typechecked is a no-op
+    def typechecked(func):
+        def inner():
+            func()
+        return inner
 
 # Command line arguments may have different types
 class ArgType(Enum):
     Time = 1, # Absolute date/time
     Duration = 2, # Duration in week/day/hour
-    Offset = 3, # Time offset ie +1h, -1d
-    String = 4, # Some custom variable
-    Final = 5, # Not followed by any argument
+    String = 3, # Some custom variable
+    Final = 4, # Not followed by any argument
 
 # Format a work entry.
 # NOTE: to improve.
 # We assume here records of (record_id, project_id, start_time, end_time, duration)
-def format_records(recs, existing_table=None):
+@typechecked
+def format_records(recs: List[Sequence], existing_table: PrettyTable=None) -> PrettyTable:
     if existing_table is not None:
         t = existing_table
     else:
@@ -65,7 +77,8 @@ def format_records(recs, existing_table=None):
 
 # Format entries: make entry size proportional to the work item duration
 # NOTE: this is currently unused
-def format_records2(recs, existing_table=None):
+@typechecked
+def format_records2(recs: List[List], existing_table: PrettyTable=None) -> PrettyTable:
     if existing_table is not None:
         t = existing_table
     else:
@@ -89,7 +102,8 @@ def format_records2(recs, existing_table=None):
 # Format projects:
 # NOTE: to improve
 # Assumes (project_id, project_path)
-def format_projects(recs, proj_flat_list, existing_table=None):
+@typechecked
+def format_projects(recs: List[dict], proj_flat_list: dict, existing_table: PrettyTable=None) -> PrettyTable:
     if existing_table is not None:
         t = existing_table
     else:
@@ -99,10 +113,21 @@ def format_projects(recs, proj_flat_list, existing_table=None):
         t.align["Project path"] = "l"
 
     for i in recs:
-        row = (i[0], proj_flat_list[i[0]])
+        row = (i["pid"], proj_flat_list[i["pid"]])
         t.add_row(row)
 
     return t
+
+def rel_duration_bar(norm_val : float, width : int) -> str:
+        partial_progress = (" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉")
+        bar_width = int(norm_val * width) # Drop fractional part
+        remainder = (norm_val * width - bar_width) * len(partial_progress)
+        return "█" * bar_width + partial_progress[int(remainder)]
+
+
+def do_return(success: bool, output=None, notify=None, warning=None, error=None) -> dict:
+    return {"success": success, "output": output, "notify": notify, "warning": warning, "error": error}
+
 
 # Process commands based on the captured arguments
 class CmdParser:
@@ -110,7 +135,8 @@ class CmdParser:
     Provides information about what arguments are available and what their option is.
     Then receives command line arguments, parse them, and execute the associated action.
     """
-    def __init__(self, db):
+    @typechecked
+    def __init__(self, db: db.RecordDb) -> None:
         # Known commands
         self.cmds = {"work": self.parse_work, "show": self.parse_show, 
                      "edit": self.parse_edit, "rm": self.parse_delete,
@@ -129,13 +155,14 @@ class CmdParser:
                 "for": {"complete": self.get_duration_dummy,
                         "type": ArgType.Duration
                         },
+
+                "until": {
+                        "complete": self.get_time_dummy, 
+                        "type": ArgType.Time,
+                        },
                 "done": {"complete": None,
                          "type": ArgType.Final
                         },
-                "force": {"complete": None,
-                          "type": ArgType.Final
-                         }
-
                 }
         # Actions for the show command
         self.show_actions = {
@@ -152,11 +179,18 @@ class CmdParser:
                                   "type": ArgType.Final,
                                 },
                         "from": {"complete": self.get_offset_dummy,
-                                "type": ArgType.Offset,
+                                "type": ArgType.Time,
                                 },
                         "for":  {"complete": self.get_duration_dummy,
                                 "type": ArgType.Duration,
                                 },
+                        "until": {
+                                "complete": self.get_time_dummy, 
+                                "type": ArgType.Time,
+                                },
+                        "exact": {"complete": None,
+                                  "type": ArgType.Final,
+                                 }
                         }
         # Actions for the show command
         self.stats_actions = self.show_actions
@@ -195,49 +229,66 @@ class CmdParser:
                 
             }
 
-    def get_project_list(self):
+
+    @typechecked
+    def define_prompt(self) -> str:
+        ongoing = self.db.get_ongoing_projects()
+        unassigned = " [unassigned]" if len(ongoing) > 0 and ongoing[0]["pid"] == 1 else ""
+        if len(ongoing) > 0:
+            return ansi.style("(wt{}) ".format(unassigned), fg='yellow')
+        else:
+            return ansi.style("(wt{}) ".format(unassigned), fg='green')
+
+    @typechecked
+    def get_project_list(self) -> List[str]:
         '''
         Get a flattened list of project name.
         For instance, project `Bar` being a child of `Foo` will be 
         displayed as  `Foo.Bar`
         '''
         _, _, _, flist = self.db.get_project_tree()
-        return flist.keys()
+        return list(flist.keys())
 
-    def get_time_dummy(self):
+    @typechecked
+    def get_time_dummy(self) -> List[str]:
         '''
         Provide autocompletion hint for a time argument type
         '''
-        return ("now", "8:00", "2020-04-09_09:10")
+        return ["now", "8:00", "2020-04-09_09:10"]
 
-    def get_duration_dummy(self):
+    @typechecked
+    def get_duration_dummy(self) -> List[str]:
         '''
         Provide autocompletion hint for a duration argument type
         '''
-        return ("2h", "1m", "7d", "1w")
+        return ["2h", "7d", "1w"]
 
-    def get_offset_dummy(self):
+    @typechecked
+    def get_offset_dummy(self) -> List[str]:
         '''
         Provide autocompletion hint for an offset argument type
         '''
-        return ("-1h", "+1h", "+1w1d2h", "-1w", "-3d")
+        return ["-1h", "+1h", "+1w1d2h", "-1w", "-3d"]
 
-    def get_entries_idx(self):
+    @typechecked
+    def get_entries_idx(self) -> List[str]:
         '''
         Get the IDs of the last 20 work records
         '''
         last_items = self.db.get_last_records(num=20)
-        ids = [str(k[0]) for k in last_items]
+        ids = [str(k["rid"]) for k in last_items]
         return ids
 
-    def get_project_idx(self):
+    @typechecked
+    def get_project_idx(self) -> List[str]:
         '''
         Return list of all project Ids
         '''
         projects = self.db.get_projects()
-        return [str(k[0]) for k in projects]
+        return [str(k["pid"]) for k in projects]
 
-    def split_weekdayhour(self, offset):
+    @typechecked
+    def split_weekdayhour(self, offset: str) -> List[Optional[int]]:
         '''
         Transform a string of weeks, days, hours into 
         a tuple.
@@ -247,10 +298,11 @@ class CmdParser:
         '''
         # Handle week/day/hour
 
-        mm = re.match(r"(?:([\d\.]+)w)?(?:([\d\.]+)d)?(?:([\d\.]+)h)?", offset)
+        mm = re.match(r"(?:([\d\.]+)w)?(?:([\d\.]+)d)?(?:([\d\.]+)h)?(?:([\d\.]+)m)?(?:([\d\.]+)s)?", offset)
         return [int(k) if k else None for k in mm.groups()]
 
-    def split_duration(self, duration):
+    @typechecked
+    def split_duration(self, duration:str) -> Optional[List[Optional[int]]]:
         '''
         Transform a string specifying a duration in hour/min/seconds
         into a tuple.
@@ -264,19 +316,24 @@ class CmdParser:
             return None
 
         # Handle h/m/s
-        mm = re.match(r"(?:([\d\.]+)h)?(?:([\d\.]+)m)?(?:([\d\.]+)s)?", duration)
-        return [k if k else None for k in mm.groups()]
+        mm = re.match(r"^(?:([\d\.]+)h)?(?:([\d\.]+)m)?(?:([\d\.]+)s)?$", duration)
+        return [int(k) if k else None for k in mm.groups()]
     
-    def parse_offset(self, offset):
+    @typechecked
+    def parse_offset(self, offset: str) -> Tuple[datetime.timedelta, bool]:
         '''
         Transforms a time offset specified as:
           +1[w|d|h]
           (week, day, hour)
-        into a timedelta object.
+        into a timedelta object, plus a boolean indicating whether the given time offset
+        has hour resolution
+
         '''
         wds_offset = [datetime.timedelta(weeks=1),
                       datetime.timedelta(days=1), 
-                      datetime.timedelta(hours=1)]
+                      datetime.timedelta(hours=1),
+                      datetime.timedelta(minutes=1),
+                      datetime.timedelta(seconds=1)]
                           
         sign = -1 if offset.startswith("-") else 1
         if offset[0] == '-' or offset[0] == '+':
@@ -286,9 +343,10 @@ class CmdParser:
                     for n, f in zip(self.split_weekdayhour(offset), wds_offset) \
                     if n is not None]
         offset_vals = sum(offsets, start=datetime.timedelta(seconds=0))
-        return sign * offset_vals
+        return sign * offset_vals, 'h' in offset
 
-    def parse_duration(self, duration):
+    @typechecked
+    def parse_duration(self, duration: str) -> Tuple[Optional[datetime.timedelta], str]:
         '''
         Transform a duration specified as either:
         - a time duration in hours/minutes/seconds
@@ -301,9 +359,12 @@ class CmdParser:
         Warning: it is assumed that seconds are normally omitted:
         ie : 1:20 == 1h20 and not 1m20s
         '''
+        if duration.startswith('-'):
+            return None, "Invalid duration: can't be negative"
         # check if we have received week/day 
         if 'w' in duration or 'd' in duration:
-            return self.parse_offset(duration), ""
+            parse_duration, _ = self.parse_offset(duration)
+            return parse_duration, ""
 
         # convert format 1:20:30 to 1h20m30s
         if ":" in duration:
@@ -323,14 +384,21 @@ class CmdParser:
         time_sec = sum([k * m for k, m in zip(hms_flt, sec_mult)])
         return datetime.timedelta(seconds=time_sec), ""
 
-    def parse_time(self, time):
+    @typechecked
+    def parse_time(self, time: str) -> Union[datetime.datetime, datetime.timedelta]:
         '''
         Transform a given time string into a datetime object.
+
+
         
         Absolute time: 
             yyyy/mm/dd_hh:mm:ss (with optionals)
             hh:mm:ss
             etc.
+
+        Relative time:
+            if prefixed with + or -
+
         Shortcuts:
             now
         '''
@@ -344,6 +412,11 @@ class CmdParser:
             '''return corresponding date'''
             return datetime.date.fromisoformat(date_str)
 
+        if time.startswith("-") or time.startswith("+"):
+            # relative time provided
+            offset, _ = self.parse_offset(time)
+            return offset
+
         if time == "now":
             return datetime.datetime.now()
         
@@ -352,11 +425,14 @@ class CmdParser:
             # Day defined
             date = parse_date(date)
             # Time defined
+            # Workaround to make h:mm a valid iso time
+            if len(hour.split(":")[0]) < 2:
+                hour = "0" + hour
             hour = parse_hms(hour)
             return datetime.datetime.combine(date, hour)
         elif "-" in time:
             # Only a date
-            return parse_date(time)
+            return self.date2dt(parse_date(time))
         elif ":" in time:
             # Workaround to make h:mm a valid iso time
             if len(time.split(":")[0]) < 2:
@@ -368,13 +444,14 @@ class CmdParser:
             duration = self.split_duration(time)
             if duration is None:
                 raise("Unknown time format {}".format(time))
-            hms = ":".join([k if k else '00' for k in duration])
+            hms = ":".join([str(k) if k else '00' for k in duration])
             hms = datetime.time.fromisoformat(hms)
             return datetime.datetime.combine(datetime.datetime.now(), hms)
         else:
             raise("Unknown date format")
 
-    def interpret_args(self, args, actions):
+    @typechecked
+    def interpret_args(self, args: List[str], actions: dict) -> Tuple[bool, dict, str]:
         '''
         Parse command line arguments to interpret argument values
         based on their expected types
@@ -418,11 +495,6 @@ class CmdParser:
                         #print("Got rel time: {}".format(rel_time))
                         proc_args[option] = rel_time
 
-                    elif actions[option]["type"] == ArgType.Offset:
-                        print("Parsing offset for ", val)
-                        offset = self.parse_offset(val) if val is not None else None
-                        proc_args[option] = offset
-
                     else:
                         proc_args[option] = val
 
@@ -437,82 +509,170 @@ class CmdParser:
 
         return True, proc_args, ""
 
-    def parse_work(self, args):
+    @staticmethod
+    @typechecked
+    def find_end_time(args: dict, start_time: datetime.datetime) -> Tuple[bool, Optional[Union[str, datetime.datetime, datetime.timedelta]]]:
+            if not "for" in args and not "until" in args:
+                return True, None
+            if "for" in args and "until" in args:
+                return False, "Error: please specify either `for` or `until`, but not both"
+            if "for" in args:
+                # Use previous start value
+                end_time = start_time + args["for"]
+            elif "until" in args:
+                end_time = args["until"]
+            return True, end_time
+
+    @typechecked
+    def parse_work(self, args: List[str]) -> dict:
         '''
         Parse provided work command, and execute it.
         Returns: an information message
         '''
         ret, proc_args, msg = self.interpret_args(args, self.work_actions)
         if not ret:
-            return msg
+            return do_return(success=False, error=msg)
 
-        # Now insert into database
-        if "done" in proc_args:
-            # Just update last record
-            now = datetime.datetime.now()
-            # Checks for items whose start time is before now
-            # and end time is after now;
-            # or items which have no end date yet.
-            overlap = self.db.get_overlapping_records(now)
-            idx = [k[0] for k in overlap]
-            # Only update records 
-            self.db.update_records_end(idx, now)
-            return
+        _, _, projs_by_id, proj_id = self.db.get_project_tree()
 
         if not "on" in proc_args:
-            return "Error: needs project name"
+            # Assign to special project "Not assigned"
+            project_id = 1
+            project_name = projs_by_id[1]
         else:
             project_name = proc_args["on"]
+            if project_name in proj_id:
+                project_id = proj_id[project_name]
+            else:
+                return do_return(success=False, error="Unknown project: '{}'".format(proc_args["on"]))
+
+
+        # If done is included, every other argument refers to the previous ongoing entry
+        # if any.
+        # In absence of "done", a new entry will be created, and ongoing entries will be terminated.
+        ongoing_projects = self.db.get_ongoing_projects()
+        if "done" in proc_args:
+            msg = []
+            warning = []
+
+            for ongoing_project in ongoing_projects:
+                idx = ongoing_project["rid"]
+
+                # done at ... : at represents the end date (start is already set)
+                # done for ... : for represents the duration of the previous task
+                # at and for are mutually exclusive
+                if "at" in proc_args and ("for" in proc_args or "until" in proc_args):
+                    msg.append("When finishing an ongoing task, use either 'at' or 'for', not both." +\
+                               "\n`work done at` => determines the end time of the ongoing entry" + \
+                               "\n`work done for` => determines the duration of the ongoing entry")
+                    break
+                if "at" in proc_args:
+                    if isinstance(proc_args["at"], datetime.timedelta):
+                        end_time = datetime.datetime.now() + proc_args["at"]
+                    else:
+                        end_time = proc_args["at"]
+                else:
+                    end_time = datetime.datetime.now()
+
+                ret, given_end_time_or_msg = self.find_end_time(proc_args, datetime.datetime.fromtimestamp(ongoing_project["start"]))
+                if ret:
+                    if given_end_time_or_msg:
+                        if isinstance(given_end_time_or_msg, datetime.timedelta):
+                            end_time = datetime.datetime.now() + given_end_time_or_msg
+                        else:
+                            end_time = given_end_time_or_msg
+                else:
+                    return do_return(success=False, error=given_end_time_or_msg)
+                   
+                if project_id == 1:
+                    # Update project assignation
+                    project_id = None
+
+                # Check if the project is assigned
+                if ongoing_project["pid"] == 1:
+                    # Not assigned
+                    
+                    warning.append("Warning: completed record {} is not assigned to any project! Use `edit <record_id> project <project_name>` to provide a project name".format(idx))
+
+                msg.append("Updated ongoing record {}".format(idx))
+                self.db.update_record(idx, new_end=end_time, new_project_id=project_id)
+                msg.append(format_records(self.db.get_records_by_id([idx, ], format=True)).get_string())
+
+                return do_return(success=True, notify="\n".join(msg), warning="\n".join(warning))
+            else:
+                # Nothing to close
+                return do_return(success=False, error="No ongoing project to terminate")
+        else:
+            # Close ongoing project without changing anything else.
+            # Also add a new project based on the provided arguments
+            pass
+
         if not "at" in proc_args:
             # No start specified => use now
             start_time = datetime.datetime.now()
         else:
-            start_time = proc_args["at"]
-        if not "for" in proc_args:
-            # No duration specified => task open
-            end_time = None
-        else:
-            end_time = start_time + proc_args["for"]
+            if isinstance(proc_args["at"], datetime.timedelta):
+                start_time = datetime.datetime.now() + proc_args["at"]
+            else:
+                start_time = proc_args["at"]
 
+        # No duration specified => task open
+        end_time = None
+        ret, given_end_time_or_msg = self.find_end_time(proc_args, start_time)
+        if ret:
+            if given_end_time_or_msg:
+                if isinstance(given_end_time_or_msg, datetime.timedelta):
+                    end_time = datetime.datetime.now() + given_end_time_or_msg
+                else:
+                    end_time = given_end_time_or_msg
+        else:
+            return do_return(success=False, error=given_end_time_or_msg)
         ## Check if there is an overlap with a *finished* working entry
         # print("Start time is: {}".format(start_time))
-        start_overlap = self.db.get_overlapping_records(start_time)
-        end_overlap = self.db.get_overlapping_records(end_time)
+        ## TODO: refactor this
+        start_overlap = self.db.get_overlapping_records(start_time, format=False)
+        end_overlap = self.db.get_overlapping_records(end_time, format=False)
         has_overlap = len(start_overlap) > 0 or len(end_overlap) > 0
-        msg = ''
+        idx = [k["rid"] for k in start_overlap] + [k["rid"] for k in end_overlap]
         if has_overlap:
-            if "force" in proc_args:
-                # Insert new item
-                ret, msg_ = self.db.insert_record_by_name(project_name, start_time, end_time)
-                if ret:
-                    # Update ovelapping items
-                    idx = [k[0] for k in start_overlap] + [k[0] for k in end_overlap]
-                    self.db.update_records_end(idx, start_time)
-                    return msg + "\n" + msg_ + "\nUpdated {}".format(idx)
-                else:
-                    return msg_
-            else:
-                if len(start_overlap) > 0:
-                    msg = "Records overlapping start point:\n" \
-                        "Use force to update the end values of these records to start tune ({})\n"\
-                            .format(start_time)
-                    return msg + format_records(start_overlap).get_string()
+            overlaps = self.db.get_overlapping_records(start_time) + self.db.get_overlapping_records(end_time)
+            msg = 'Inserted new record'
+            # check if there is an overlap
+            # Close them
+            self.db.update_records_end(idx, start_time)
 
-                if end_time and len(end_overlap) > 0:
-                    msg = "Records overlapping end point:\n" + format_records(end_overlap).get_string()
-                return msg
+            # Notify if an updated (closed) record wasn't assigned to a project
+            msg = None
+            non_assigned_idx = [k["rid"] for k in self.db.get_records_by_id(idx) if k["pid"] == 1]
+            if len(non_assigned_idx) > 0:
+                msg = ansi.style("Warning: record {} was not attributed to a project!" \
+                        "Use `edit <record_id> project <project_name>` to provide a project name"\
+                        .format(", ".join([str(k) for k in non_assigned_idx])), fg='yellow')
+            
+            # Add the new task
+            _ = self.db.insert_record(project_id, start_time, end_time)
+
+            ret = "Closed overlapping ongoing task which was: {}\n".format(", ".join([str(k) for k in idx])) \
+                    + format_records(overlaps).get_string() + "\n"\
+                    + ansi.style("\nInserted new record for project {} from {} to {}"\
+                                    .format(project_name, start_time, end_time), fg='green')
+            ret = ret + "\n" + msg if msg else ret
+            return do_return(success=True, notify=ret)
 
         else:
             # Normal insertion
-            self.db.insert_record_by_name(project_name, start_time, end_time)
-            return "Inserted new record for project {} from {} to {}".format(project_name, start_time, end_time)
+            _ = self.db.insert_record(project_id, start_time, end_time)
+            return do_return(success=True, notify="Inserted new record for project {} from {} to {}"\
+                                .format(project_name, start_time, end_time))
     
     @staticmethod
-    def date2dt(x):
+    @typechecked
+    def date2dt(x: datetime.datetime.date) -> datetime.datetime:
         '''Make a datetime object based on a given date'''
         return datetime.datetime.combine(x, datetime.time.min)
 
-    def shortcut_to_dates(self, args: str):
+    @typechecked
+    def shortcut_to_dates(self, args: dict) -> Tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
         '''
         Transform common names to a time tuple.
         '''
@@ -535,7 +695,8 @@ class CmdParser:
        
         return start_date, end_date
 
-    def parse_show(self, args):
+    @typechecked
+    def parse_show(self, args: List[str]) -> dict:
         '''
         Parse provided show command, and execute it.
         Returns: an information message
@@ -551,7 +712,7 @@ class CmdParser:
 
         ret, proc_args, msg = self.interpret_args(args, self.show_actions)
         if not ret:
-            return msg
+            return do_return(success=False, error=msg)
 
         today = self.date2dt(datetime.date.today())
         _, _, id_to_proj, _ = self.db.get_project_tree()
@@ -571,19 +732,40 @@ class CmdParser:
         start_date, end_date = self.shortcut_to_dates(proc_args)
         if start_date is None or end_date is None:
             if "from" in proc_args:
-                start_date = today + proc_args["from"]
-                end_date = today    
-            if "for" in proc_args:
-                end_date = start_date + proc_args["for"]
-        
+                if "exact" in proc_args:
+                    if isinstance(proc_args["from"], datetime.timedelta):
+                        # It's relative to exactly now()
+                        start_date = datetime.datetime.now() + proc_args["from"]
+                    else:
+                        start_date = proc_args["from"]
+                else:
+                    # It's relative to the start of the day
+                    if isinstance(proc_args["from"], datetime.timedelta):
+                        # It's relative to exactly now()
+                        start_date = today + proc_args["from"]
+                    else:
+                        start_date = proc_args["from"]
+
+                end_date = today + datetime.timedelta(days=1)   
+
+            ret, given_end_time_or_msg = self.find_end_time(proc_args, start_date)
+            if ret:
+                if given_end_time_or_msg:
+                    if isinstance(given_end_time_or_msg, datetime.timedelta):
+                        end_date = today + given_end_time_or_msg
+                    else:
+                        end_date = given_end_time_or_msg
+            else:
+                return do_return(success=False, error=given_end_time_or_msg)
         
         items = self.db.get_records(start_date, end_date)
         items = rep_with_proj_tree(items)
         ret = "Showing from {} to {}".format(start_date, end_date) + "\n"
         ret += format_records(items).get_string()
-        return ret
+        return do_return(success=True, output=ret)
     
-    def parse_stats(self, args):
+    @typechecked
+    def parse_stats(self, args: List[str]) -> dict:
         '''
         Parse provided stats command, and execute it.
         Returns: an information message
@@ -592,9 +774,9 @@ class CmdParser:
         '''
         ret, proc_args, msg = self.interpret_args(args, self.stats_actions)
         if not ret:
-            return msg
+            return do_return(success=False, error=ret)
         # Get projects list
-        tree_s, _, flat_tree, _ = self.db.get_project_tree()
+        tree_s, tree_t, flat_tree, flat_tree_rev = self.db.get_project_tree()
         
         today = self.date2dt(datetime.date.today())
 
@@ -604,43 +786,61 @@ class CmdParser:
         start_date, end_date = self.shortcut_to_dates(proc_args)
         if start_date is None or end_date is None:
             if "from" in proc_args:
-                start_date = today + proc_args["from"]
-                end_date = today    
+                if "exact" in proc_args:
+                    if isinstance(proc_args["from"], datetime.timedelta):
+                        # It's relative to exactly now()
+                        start_date = datetime.datetime.now() + proc_args["from"]
+                    else:
+                        start_date = proc_args["from"]
+                else:
+                    # It's relative to the start of the day
+                    if isinstance(proc_args["from"], datetime.timedelta):
+                        # It's relative to exactly now()
+                        start_date = today + proc_args["from"]
+                    else:
+                        start_date = proc_args["from"]
+
+                end_date = today + datetime.timedelta(days=1)   
             if "for" in proc_args:
                 end_date = start_date + proc_args["for"]
 
         items = self.db.get_period_stats(start_date, end_date)
 
         t = PrettyTable()
-        t.field_names = ("Project ID", "Project", "Time spent")
+        t.field_names = ("Project ID", "Project", "Time spent", "Graph")
         t.align["Project"] = "l"
         t.align["Time spent"] = "l"
+        t.align["Graph"] = "l"
 
         data = []
-
         # Total time spent
-        tot_duration = sum([k[-1] for k in items])
+        tot_duration = sum([k["duration"] for k in items])
 
         # Stats per project
         for proj_idx, _ in tree_s.items():
             proj_children_recursive = self.db.get_children_list(tree_s, proj_idx)
             duration = 0
+            is_sum_res = False
             for item in items:
-                if item[0] == proj_idx:
+                if item["pid"] == proj_idx:
                     # print("Adding time for {} = {}".format(item[1], datetime.timedelta(seconds=item[2])))
-                    duration += item[2]
+                    duration += item["duration"]
             for item in items:
-                if item[0] in proj_children_recursive:
+                if item["pid"] in proj_children_recursive:
+                    is_sum_res = True
                     # print("Adding time for child {} = {}".format(item[1], datetime.timedelta(seconds=item[2])))
-                    duration += item[2]
+                    duration += item["duration"]
             
             proj_name = flat_tree[proj_idx]
             if duration > 0:
-                data.append([proj_idx, proj_name, datetime.timedelta(seconds=duration)])
+                # use https://mike42.me/blog/2018-06-make-better-cli-progress-bars-with-unicode-block-characters
+                data.append([proj_idx, proj_name, 
+                             "{:.2f}".format(duration / 3600.) + " h",
+                             rel_duration_bar(duration/tot_duration, 30), is_sum_res] )
 
         # Sort by project name
         data = natsorted(data, key=lambda x: x[1])
-        
+
         # Color
         for k, item in enumerate(data):
             # Check if item[1] has a parent
@@ -651,17 +851,19 @@ class CmdParser:
                 subproj = subprojs[-1]
                 subproj = (len(data[k][1]) - len(subproj) - len(subprojs)) * " " + "└─" + subproj
                 data[k][1] = subproj
+            if data[k][-1]:
+                data[k][2] = ansi.style(data[k][2], fg='yellow')
 
         for k in data:
-            t.add_row(k)
+            t.add_row(k[:-1])
 
-        t.add_row(("Total", "[All projects]", datetime.timedelta(seconds=tot_duration)))        
+        t.add_row(("Total", "[All projects]", "{:.2f} h".format(tot_duration / 3600.), str(datetime.timedelta(seconds=tot_duration))))        
         ret = "Stats from {} to {}".format(start_date, end_date) + "\n"
 
-        return ret + t.get_string()
+        return do_return(success=True, output=ret + t.get_string())
 
-
-    def parse_edit(self, args):
+    @typechecked
+    def parse_edit(self, args: List[str]) -> dict:
         '''
         Parse provided edit command, and execute it.
         Returns: an information message
@@ -675,13 +877,13 @@ class CmdParser:
 
         ret, proc_args, msg = self.interpret_args(args, self.edit_actions)
         if not ret:
-            return msg
+            return do_return(success=False, error=msg)
         edit_id = None
         project_id = None
         new_start_time = None
         new_end_time = None
         if not "id" in proc_args:
-            return "Required parameter `id` is missing."
+            return do_return(success=False, error="Required parameter `id` is missing.")
         else:
             edit_id = int(proc_args["id"])
         
@@ -691,35 +893,50 @@ class CmdParser:
             if proc_args["project"] in proj_to_id:
                 project_id = proj_to_id[proc_args["project"]]
             else:
-                return "Invalid project: {}".format(proc_args["project"])
+                return do_return(success=False, error="Invalid project: {}".format(proc_args["project"]))
 
         if "from" in proc_args:
             # Edit start time
-            new_start_time = proc_args["from"]
+            if isinstance(proc_args["from"], datetime.timedelta):
+                # Shift the existing start date by this amount
+                # required getting it first
+                edit_item = self.db.get_records_by_id([edit_id, ])
+                curr_start = datetime.datetime.fromtimestamp(edit_item[0][3])
+                new_start_time = curr_start + proc_args["from"]
+            else:
+                new_start_time = proc_args["from"]
 
         if "to" in proc_args:
             # Edit end time
-            new_end_time = proc_args["to"]
+            if isinstance(proc_args["to"], datetime.timedelta):
+                edit_item = self.db.get_records_by_id([edit_id, ])
+                curr_end = datetime.datetime.fromtimestamp(edit_item[0][4])
+                new_end_time = curr_end + proc_args["to"]
+            else:
+                new_end_time = proc_args["to"]
 
-        # Check overlaps
-        start_overlap = self.db.get_overlapping_records(new_start_time) if new_start_time is not None else []
-        end_overlap = self.db.get_overlapping_records(new_end_time) if new_end_time is not None else []
-        # Ignore this item
-        start_overlap = [k for k in start_overlap if k[0] != edit_id]
-        end_overlap = [k for k in end_overlap if k[0] != edit_id]
+        if "from" in proc_args or "to" in proc_args:
+            # Check overlaps
+            start_overlap = self.db.get_overlapping_records(new_start_time) if new_start_time is not None else []
+            end_overlap = self.db.get_overlapping_records(new_end_time) if new_end_time is not None else []
+            # Ignore this item
+            start_overlap = [k for k in start_overlap if k[0] != edit_id]
+            end_overlap = [k for k in end_overlap if k[0] != edit_id]
 
-        if len(start_overlap) > 0:
-            msg = "Cancelling: Records overlap new start time ({}):\n".format(new_start_time)
-            return msg + format_records(start_overlap).get_string()
+            if len(start_overlap) > 0:
+                msg = "Cancelling: Records overlap new start time ({}):\n".format(new_start_time)
+                return do_return(success=False, error=msg + format_records(start_overlap).get_string())
 
-        if len(end_overlap) > 0:
-            msg = "Cancelling: Records overlap new end time ({}):\n"
-            return msg + format_records(end_overlap).get_string()
-        
+            if len(end_overlap) > 0:
+                msg = "Cancelling: Records overlap new end time ({}):\n"
+                return do_return(success=False, error=msg + format_records(end_overlap).get_string())
+            
         # Update
         self.db.update_record(edit_id, new_start=new_start_time, new_end=new_end_time, new_project_id=project_id)
+        return do_return(success=True, notify="Updated record {}".format(edit_id))
     
-    def parse_delete(self, args):
+    @typechecked
+    def parse_delete(self, args: List[str]) -> dict:
         '''
         Parse provided delete command, and execute it.
         Returns: an information message
@@ -730,30 +947,35 @@ class CmdParser:
         
         # Only retrieve IDs
         if len(args) == 0:
-            return "Error: no record ID provided"
+            return do_return(success=False, error="Error: no record ID provided")
         ids = [int(k) for k in args] # Ensure only integers are taken
-        self.db.delete_records(ids)
+        deleted_ids = self.db.delete_records(ids)
+        return do_return(success=True, notify="Records deleted : {}".format(", ".join([str(k) for k in deleted_ids])))
 
 
-    def parse_project(self, args):
+    @typechecked
+    def parse_project(self, args: List[str]) -> dict:
         '''
         Parse provided project command, and execute it.
         Returns: an information message
         
         See and edit projects
+            # Show all projects
+            project list
+            # Add a project
+            project add <project path> # Add some project as child of something.
+            # Rename a project
+            project id <project id> rename <subproject name>
+            # TODO
+            project hide <project_id> # Hides a project and its children
 
-        project list # Show all
-        project add <project path> # Add some project as child of something.
-        project id <project id> rename <subproject name>
-        project hide <project_id> # Hides a project and its children
-
-        Do we want these ones?
-        project rm <project id> # Delete a project. Warning! is used?
+            Do we want these ones?
+            project rm <project id> # Delete a project. Warning! only if unused!
         '''
 
         ret, proc_args, msg = self.interpret_args(args, self.projects_actions)
         if not ret:
-            return msg
+            return do_return(success=False, error=msg)
 
         tree_s, _, proj_byids, projs_byname = self.db.get_project_tree()
 
@@ -764,14 +986,14 @@ class CmdParser:
         if 'list' in proc_args:
             proj_list = self.db.get_projects()
             proj_names = format_projects(proj_list, proj_byids)
-            return proj_names.get_string()
+            return do_return(success=True, output=proj_names.get_string())
         elif 'add' in proc_args:
             new_project_path = proc_args['add'].split(".")
             new_project_name = new_project_path[-1]
             
             # check if we already have this project
             if proc_args['add'] in projs_byname:
-                return "Project already exists, skipping."
+                return do_return(success=False, error="Project already exists")
             # check if the new project is the child of some other project
             parent_id = None
             if len(new_project_path) > 1:
@@ -780,6 +1002,7 @@ class CmdParser:
                     # get the ID of the parent
                     parent_id = projs_byname[project_basepath]
             self.db.insert_project(new_project_name, parent_id=parent_id)
+            return do_return(success=True, notify="Added project {}".format(new_project_name))
 
         elif 'rm' in proc_args:
             # NOTE: dangerous operation. What about children?
@@ -787,34 +1010,39 @@ class CmdParser:
             # one of these children is present. If not, delete.
             project_name = proc_args['rm']
             project_id = projs_byname[project_name]
+            if project_id == 1:
+                # Don't allow deletion of this special project
+                return do_return(success=False, error="Can't delete special project 'Not assigned'")
             children_list = self.db.get_children_list(tree_s, project_id)
             recs = self.db.get_records_for_projects(children_list + [project_id, ])
             if len(recs) > 0:
-                return "Can't delete project {}: used by records: \n".format(project_id) + \
-                     ", ".join([str(k[0]) for k in recs])
+                return do_return(success=False, error="Can't delete project {}: used by records: \n".format(project_id) + \
+                     ", ".join([str(k["pid"]) for k in recs]))
             
             else:
                 self.db.delete_project(project_id)
+                return do_return(success=True, notify="Deleted project {}".format(project_id))
 
         elif 'id' in proc_args:
             if 'rename' in proc_args:
                 new_name = proc_args["rename"]
                 project_id = int(proc_args['id'])
                 if "." in new_name:
-                    return "Can't change project path. Please rename parent project first."
+                    return do_return(success=False, error="Can't change project path. Please rename parent project first.")
                 if not self.db.rename_project(project_id, new_name):
-                    return "Project ID {} doesn't exist.".format(proc_args['id'])
+                    return do_return(success=False, error="Project ID {} doesn't exist.".format(proc_args['id']))
                 else:
                     ret = "Updated project ID {}".format(proc_args['id'])
                     proj = self.db.get_project_id(project_id)
-                    return ret + "\n" + format_projects(proj, proj_byids).get_string()
+                    return do_return(success=True, notify=ret + "\n" + format_projects(proj, proj_byids).get_string())
             else:
                 # Just show it
                 proj = self.db.get_project_id(project_id)
-                return format_projects(proj, proj_byids).get_string()
+                return do_return(success=True, output=format_projects(proj, proj_byids).get_string())
 
 
-    def parse_cmd(self, cmd, args):
+    @typechecked
+    def parse_cmd(self, cmd: str, args: List[str]) -> dict:
         '''
         Execute the appropriate parse function
         '''
