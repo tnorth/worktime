@@ -39,9 +39,10 @@ try:
 except ImportError:
     # typechecked is a no-op
     def typechecked(func):
-        def inner():
-            func()
+        def inner(*args, **kwargs):
+            return func(*args, **kwargs)
         return inner
+
 
 # Command line arguments may have different types
 class ArgType(Enum):
@@ -118,6 +119,27 @@ def format_projects(recs: List[dict], proj_flat_list: dict, existing_table: Pret
 
     return t
 
+def format_todos(recs: List[dict], existing_table: PrettyTable=None,
+                 show=None) -> PrettyTable:
+
+    show_items = {"due": "due_ts", "opened": "open_ts", "closed": "done_ts"}
+    extra_items = [show_items[k] for k in show if k in show_items] if show else []
+
+    if existing_table is not None:
+        t = existing_table
+    else:
+        t = PrettyTable()
+        field_names =  ["ID", "Descr", "Project"]  + [k.title() for k in show_items.keys() if k in show]
+        t.field_names = field_names
+        t.align["ID"] = "l"
+        t.align["Project path"] = "l"
+
+    for i in recs:
+        row = [i["tid"], i["descr"], i["project_name"]] + [datetime.datetime.fromtimestamp(i[k]) if i[k] is not None else "" for k in extra_items]
+        t.add_row(list(row))
+
+    return t
+
 def rel_duration_bar(norm_val : float, width : int) -> str:
         partial_progress = (" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉")
         bar_width = int(norm_val * width) # Drop fractional part
@@ -140,7 +162,8 @@ class CmdParser:
         # Known commands
         self.cmds = {"work": self.parse_work, "show": self.parse_show, 
                      "edit": self.parse_edit, "rm": self.parse_delete,
-                     "stats": self.parse_stats, "project": self.parse_project}
+                     "stats": self.parse_stats, "project": self.parse_project,
+                     "todo": self.parse_todo, }
         # Path to the record database
         self.db = db
         # Actions for the work command
@@ -228,6 +251,23 @@ class CmdParser:
                      },
                 
             }
+        # Todos
+        self.todo_actions = {
+            "id": {"complete": self.get_todo_idx, "type": ArgType.String},
+            "list": {"complete": None, "type": ArgType.Final},
+            "opened": {"complete": None, "type": ArgType.Final},
+            "closed": {"complete": None, "type": ArgType.Final},
+            "add": {"complete": None,
+                       "type": ArgType.String,
+                     },
+            "due": {"complete": self.get_time_dummy, "type": ArgType.Time},
+            "prio": {"complete": self.get_prio_dummy, "type": ArgType.String},
+            "project": {"complete": self.get_project_list,
+                       "type": ArgType.String },
+            "rm": {"complete": self.get_todo_idx,
+                       "type": ArgType.String,
+                     },
+        }
 
 
     @typechecked
@@ -270,6 +310,7 @@ class CmdParser:
         '''
         return ["-1h", "+1h", "+1w1d2h", "-1w", "-3d"]
 
+
     @typechecked
     def get_entries_idx(self) -> List[str]:
         '''
@@ -286,6 +327,17 @@ class CmdParser:
         '''
         projects = self.db.get_projects()
         return [str(k["pid"]) for k in projects]
+
+
+    def get_todo_idx(self) -> List[str]:
+        '''
+        Return list of all todos Ids
+        '''
+        todos = self.db.get_todos()
+        return [str(k["tid"]) for k in todos]
+
+    def get_prio_dummy(self) -> List[str]:
+        return [str(k) for k in range(5)]
 
     @typechecked
     def split_weekdayhour(self, offset: str) -> List[Optional[int]]:
@@ -1040,13 +1092,110 @@ class CmdParser:
                 proj = self.db.get_project_id(project_id)
                 return do_return(success=True, output=format_projects(proj, proj_byids).get_string())
 
+    @typechecked
+    def parse_todo(self, args: List[str]) -> dict:
+        '''
+        Parse provided todo command, and execute it.
+        Returns: an information message
+        
+        See and edit projects
+            # Show all todos
+            todo list
+            # Add a todo
+            todo add <descr> 
+            ...
+            TODO
+        '''
+        ret, proc_args, msg = self.interpret_args(args, self.todo_actions)
+        if not ret:
+            return do_return(success=False, error=msg)
+
+        tree_s, _, proj_byids, projs_byname = self.db.get_project_tree()
+
+        if len(proc_args) == 0:
+            # No args
+            proc_args = {'list':None}
+
+        if 'list' in proc_args:
+            todo_list = format_todos(self.db.get_todos(), show=('due', 'opened', 'closed'))
+            return do_return(success=True, output=todo_list.get_string())
+
+        if 'opened' in proc_args:
+            todo_list = format_todos(self.db.get_todos(opened_only=True), show=('due', 'opened'))
+            return do_return(success=True, output=todo_list.get_string())
+        if 'closed' in proc_args:
+            todo_list = format_todos(self.db.get_todos(closed_only=True), show=('due', 'opened', 'closed'))
+            return do_return(success=True, output=todo_list.get_string())
+
+        elif 'add' in proc_args:
+            due_time = None
+            project_id = None
+            priority = None
+            if 'due' in proc_args:
+                if isinstance(proc_args["due"], datetime.timedelta):
+                    due_time = datetime.datetime.now() + proc_args["due"]
+                else:
+                    due_time = proc_args["due"]
+
+            if 'project' in proc_args:
+                if proc_args['project'] in projs_byname:
+                    project_id = projs_byname[proc_args['project']]
+                else:
+                    return do_return(success=False, error="Unknown project: '{}'".format(proc_args["project"]))
+
+            if 'prio' in proc_args:
+                try:
+                    priority = int(proc_args['prio'])
+                except:
+                    return do_return(success=False, error="Invalid priority: '{}'".format(proc_args["prio"]))
+
+            self.db.insert_todo(proc_args["add"], project_idx=project_id, due=due_time, priority=priority)
+
+            return do_return(success=True, notify="Added ToDo")
+
+        elif 'rm' in proc_args:
+            pass
+
+        elif 'id' in proc_args:
+            if 'edit' in proc_args:
+                pass
+            elif 'done' in proc_args:
+                # Update done_ts
+                pass
+            elif 'project' in proc_args:
+                pass
+            else:
+                pass
+
+
 
     @typechecked
     def parse_cmd(self, cmd: str, args: List[str]) -> dict:
         '''
         Execute the appropriate parse function
         '''
-        return self.cmds[cmd](args)
+        quote_start = -1
+        quote_end = -1
+        searching = False
+        new_args = []
+        for i, k in enumerate(args):
+            if k.startswith("\""):
+                if not searching:
+                    quote_start = i
+                    searching = True
+            if k.endswith("\""):
+                quote_end = i
+                if searching:
+                    new_args.append((" ".join(args[quote_start:quote_end + 1]))[1:-1])
+                    searching = False
+            else:
+                if not searching:
+                    new_args.append(k)
+
+        #print(args)
+        #print(new_args)
+
+        return self.cmds[cmd](new_args)
         
 
 if __name__ == '__main__':

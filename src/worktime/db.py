@@ -20,7 +20,7 @@ import sqlite3
 import datetime
 import copy
 
-from typing import Optional, Tuple, List, Union
+from typing import Optional, Tuple, List, Union, Iterable
 
 try:
     from typeguard import typechecked
@@ -54,36 +54,58 @@ class RecordDb:
 
         # Categories    
         cat_db = """
-                 CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    parent INTEGER,
-                    name TEXT NOT NULL UNIQUE
-                 );
-                 """
+            CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parent INTEGER,
+            name TEXT NOT NULL UNIQUE
+            );
+            """
 
         # Work entries
         # AUTOINCREMENT prevents the reuse of an id, such that new records will
         # always have the highest id
         records_db = """
-                    CREATE TABLE IF NOT EXISTS records (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        project_id INTEGER,
-                        start INTEGER,
-                        end INTEGER,
+            CREATE TABLE IF NOT EXISTS records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER,
+                start INTEGER,
+                end INTEGER,
 
-                        CONSTRAINT fk_project
-                            FOREIGN KEY (project_id)
-                            REFERENCES projects(id),
-                        
-                        CONSTRAINT start_chk CHECK(typeof(start) = 'integer'),
-                        CONSTRAINT end_chk CHECK(typeof(end) = 'integer' OR end = NULL)
+                CONSTRAINT fk_project
+                    FOREIGN KEY (project_id)
+                    REFERENCES projects(id),
+                
+                CONSTRAINT start_chk CHECK(typeof(start) = 'integer'),
+                CONSTRAINT end_chk CHECK(typeof(end) = 'integer' OR end = NULL)
 
-                    );
-                  """
+            );
+            """
+
+        # Add todos
+        todos_db = """
+            CREATE TABLE IF NOT EXISTS todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            priority INTEGER DEFAULT 0,
+            project_id INTEGER,
+            open_ts INTEGER,
+            done_ts INTEGER,
+            due_ts INTEGER,
+            descr TEXT NOT NULL,
+            
+            CONSTRAINT fk_todo_project
+                FOREIGN KEY (project_id)
+                REFERENCES projects(id),
+            
+            CONSTRAINT priority_chk CHECK(typeof(priority) = 'integer'),
+            CONSTRAINT open_ts_chk CHECK(typeof(open_ts) = 'integer'),
+            CONSTRAINT done_ts_chk CHECK(typeof(done_ts) = 'integer' OR done_ts = NULL)
+            CONSTRAINT due_ts_chk CHECK(typeof(due_ts) = 'integer' OR done_ts = NULL)
+            );
+            """
         # Add non-assigned project
         notassigned_proj_req = """INSERT OR IGNORE INTO projects (id, parent, name) VALUES (1, NULL, 'Not assigned')"""
 
-        for i in (cat_db, records_db, notassigned_proj_req):
+        for i in (cat_db, records_db, todos_db, notassigned_proj_req):
             cur.execute(i)
         
 
@@ -297,6 +319,31 @@ class RecordDb:
         return [dict(k) for k in projects]
 
     @typechecked
+    # FIXME use join otherwise the non-assigned are not visible
+    def get_todos(self, opened_only=False, closed_only=False, orderby: Iterable[str] = None) -> List[dict]:
+        if opened_only and closed_only:
+            raise "open_only and closed_only are mutually exclusive"
+        cond = ""
+        if opened_only:
+            cond = "AND t.done_ts IS NULL"
+        if closed_only:
+            cond = "AND t.done_ts IS NOT NULL "
+
+        ordering = {"opened" : "open_ts", "closed": "close_ts", "due": "due_ts",
+                   "project": "pid", "id": "tid"}
+
+        sort = ""
+        if orderby:
+            sort = "ORDER BY " + ", ".join([ordering[k] for k in orderby if k in ordering]) + " DESC"
+
+        req = """SELECT t.id AS tid, t.project_id, t.priority, t.open_ts, t.done_ts, t.due_ts, t.descr""" \
+              """, p.id AS pid, p.name AS project_name FROM todos t, projects p""" \
+              """ WHERE t.project_id = p.id {} {}""".format(cond, sort)
+        cur = self.con.cursor()
+        todos = cur.execute(req).fetchall()
+        return [dict(k) for k in todos]
+
+    @typechecked
     def get_records_for_projects(self, project_ids: List[int]) -> List[dict]:
         cur = self.con.cursor()
         req = """SELECT id AS pid FROM records WHERE project_id IN ("""
@@ -415,6 +462,25 @@ class RecordDb:
             
         return children
 
+    @typechecked
+    def insert_todo(self, descr,  project_idx: Optional[int] = None, 
+                    due : Optional[datetime.datetime] = None, 
+                    priority: Optional[int] = None) -> None:
+        '''
+        Insert a new todo
+        '''
+        if due:
+            due = to_unixtime(due)
+        if not priority:
+            priority = 0
+
+        req = """INSERT INTO todos (project_id, priority, open_ts, done_ts, due_ts, descr)
+                  VALUES (?, ?, strftime('%s','now'), NULL, ?, ?)"""
+        cur = self.con.cursor()
+        cur.execute(req, (project_idx, priority, due, descr))
+        self.con.commit()
+
+
 def pretty(d, indent=0):
    for key, value in d.items():
       print('\t' * indent + str(key))
@@ -422,11 +488,11 @@ def pretty(d, indent=0):
          pretty(value, indent+1)
       else:
          print('\t' * (indent+1) + str(value))
+        
 
 
 if __name__ == "__main__":
     db = RecordDb(db_path="/home/tnorth/personal/worktime/work.db")
-    db.create_db()
     db.get_ongoing_projects()
     import sys
     sys.exit(0)

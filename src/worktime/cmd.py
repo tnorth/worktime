@@ -32,13 +32,14 @@ from worktime.record import (
     CmdParser,
 )
 try:
-    from typeguard import typechecked
+    from typeguard import typechecked_
 except ImportError:
     # typechecked is a no-op
     def typechecked(func):
-        def inner():
-            func()
+        def inner(*args, **kwargs):
+            return func(*args, **kwargs)
         return inner
+
 
 class WorkCmd(cmd2.Cmd):
     '''
@@ -394,6 +395,52 @@ class WorkCmd(cmd2.Cmd):
                 return []
             if "id" in prev_args:
                 return ["rename"]
+            return [k for k in avail_options if k.startswith(line[begidx:endidx])]
+        else:
+            return self.cmd_parser.edit_actions["complete"]
+    @typechecked
+    def do_todo(self, args: cmd2.parsing.Statement) -> None:
+        '''
+        Execute a todo command.
+        '''
+        
+        ret = self.cmd_parser.parse_cmd("todo",  args.split(" "))
+        self.print_output(ret)
+
+    @typechecked
+    def complete_todo(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
+        '''
+        Autocompletion for the todo command
+        todo list
+        todo add <todo> [project] <project_name>
+        todo id <todo_id> done
+        todo id <todo_id> edit <new descr>
+        todo rm <todo_id>
+        
+        '''
+
+        last_option = self.last_option(line, begidx, endidx)
+
+        # Complete values for option "id", "project", "from", "to" 
+        #self.poutput("Last option: {}, begidx: {}, endidx: {}".format(last_option, begidx, endidx))
+        if last_option in self.cmd_parser.todo_actions:
+            # Provide options
+            if self.cmd_parser.todo_actions[last_option]["type"] == ArgType.Final:
+                return []
+            items = self.cmd_parser.todo_actions[last_option]["complete"]()
+            sel_items = [k for k in items
+                        if k.startswith(line[begidx:endidx])
+                        ]
+            return sel_items
+
+        # Otherwise suggest options
+        proj_act = Counter(self.cmd_parser.todo_actions.keys())
+        prev_args = Counter(line.split(" "))
+        #print(prev_args)
+        if prev_args:
+            avail_options = list(proj_act - prev_args)
+            # Exclude actions which have no further argument
+            
             return [k for k in avail_options if k.startswith(line[begidx:endidx])]
         else:
             return self.cmd_parser.edit_actions["complete"]
