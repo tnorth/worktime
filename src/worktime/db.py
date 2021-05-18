@@ -86,7 +86,7 @@ class RecordDb:
             CREATE TABLE IF NOT EXISTS todos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             priority INTEGER DEFAULT 0,
-            project_id INTEGER,
+            project_id INTEGER DEFAULT 1,
             open_ts INTEGER,
             done_ts INTEGER,
             due_ts INTEGER,
@@ -244,7 +244,7 @@ class RecordDb:
         # Check which records exist
         recs = self.get_records_by_id(record_list)
         # Keep only record id
-        recs = [(k["id"],) for k in recs]
+        recs = [(k["rid"],) for k in recs]
         req = """DELETE FROM records WHERE id = ?"""
         cur.executemany(req, recs)
         self.con.commit()
@@ -317,31 +317,6 @@ class RecordDb:
         cur = self.con.cursor()
         projects = cur.execute(req).fetchall()
         return [dict(k) for k in projects]
-
-    @typechecked
-    # FIXME use join otherwise the non-assigned are not visible
-    def get_todos(self, opened_only=False, closed_only=False, orderby: Iterable[str] = None) -> List[dict]:
-        if opened_only and closed_only:
-            raise "open_only and closed_only are mutually exclusive"
-        cond = ""
-        if opened_only:
-            cond = "AND t.done_ts IS NULL"
-        if closed_only:
-            cond = "AND t.done_ts IS NOT NULL "
-
-        ordering = {"opened" : "open_ts", "closed": "close_ts", "due": "due_ts",
-                   "project": "pid", "id": "tid"}
-
-        sort = ""
-        if orderby:
-            sort = "ORDER BY " + ", ".join([ordering[k] for k in orderby if k in ordering]) + " DESC"
-
-        req = """SELECT t.id AS tid, t.project_id, t.priority, t.open_ts, t.done_ts, t.due_ts, t.descr""" \
-              """, p.id AS pid, p.name AS project_name FROM todos t, projects p""" \
-              """ WHERE t.project_id = p.id {} {}""".format(cond, sort)
-        cur = self.con.cursor()
-        todos = cur.execute(req).fetchall()
-        return [dict(k) for k in todos]
 
     @typechecked
     def get_records_for_projects(self, project_ids: List[int]) -> List[dict]:
@@ -463,6 +438,46 @@ class RecordDb:
         return children
 
     @typechecked
+    def get_todos(self, opened_only=False, closed_only=False, due_only=False, orderby: Iterable[str] = None) -> List[dict]:
+        if opened_only and closed_only:
+            raise "open_only and closed_only are mutually exclusive"
+        cond = ""
+        if opened_only:
+            cond = "WHERE t.done_ts IS NULL"
+        if closed_only:
+            cond = "WHERE t.done_ts IS NOT NULL"
+        if due_only:
+            if cond == "":
+                cond += " WHERE "
+            else:
+                cond += " AND "
+            cond += "t.due_ts IS NOT NULL"
+
+        ordering = {"opened" : "open_ts", "closed": "close_ts", "due": "due_ts",
+                   "project": "pid", "id": "tid"}
+
+        sort = ""
+        if orderby:
+            sort = "ORDER BY " + ", ".join([ordering[k] for k in orderby if k in ordering]) + " DESC"
+
+        req = """SELECT t.id AS tid, t.project_id, t.priority, t.open_ts, t.done_ts, t.due_ts, t.descr""" \
+              """, p.id AS pid, p.name AS project_name FROM todos t """ \
+              """ LEFT JOIN projects p ON t.project_id = p.id {} {}""".format(cond, sort)
+        cur = self.con.cursor()
+        todos = cur.execute(req).fetchall()
+        return [dict(k) for k in todos]
+
+    @typechecked
+    def get_todo_by_ids(self, ids: Iterable[int]) -> List[dict]:
+        req = """SELECT t.id AS tid, t.project_id, t.priority, t.open_ts, t.done_ts, t.due_ts, t.descr""" \
+              """, p.id AS pid, p.name AS project_name FROM todos t """ \
+              """ LEFT JOIN projects p ON t.project_id = p.id WHERE tid IN ({})""" \
+              .format(", ".join([str(k) for k in ids]))
+        cur = self.con.cursor()
+        todos = cur.execute(req).fetchall()
+        return [dict(k) for k in todos]
+
+    @typechecked
     def insert_todo(self, descr,  project_idx: Optional[int] = None, 
                     due : Optional[datetime.datetime] = None, 
                     priority: Optional[int] = None) -> None:
@@ -479,6 +494,36 @@ class RecordDb:
         cur = self.con.cursor()
         cur.execute(req, (project_idx, priority, due, descr))
         self.con.commit()
+
+    @typechecked
+    def delete_todos(self, todo_idx: Iterable[int]) -> Optional[List[dict]]:
+        recs = self.get_todo_by_ids(todo_idx)
+        req = """DELETE FROM todos WHERE id IN ({})""" \
+                .format(", ".join([str(k["tid"]) for k in recs]))
+        cur = self.con.cursor()
+        cur.execute(req)
+        self.con.commit()
+        return recs
+
+    @typechecked
+    def close_todo(self, todo_idx: int, done_ts: datetime.datetime = None) -> Optional[List[dict]]:
+        recs = self.get_todo_by_ids((todo_idx,))
+        if len(recs) == 1:
+            req = """UPDATE todos SET done_ts = ? WHERE id = ?"""
+            cur = self.con.cursor()
+            cur.execute(req, (done_ts.timestamp(), recs[0]["tid"]))
+            self.con.commit()
+        return recs
+
+    @typechecked
+    def update_todo_project(self, todo_idx: int, project_id: int = None) -> Optional[List[dict]]:
+        recs = self.get_todo_by_ids((todo_idx,))
+        if len(recs) == 1:
+            req = """UPDATE todos SET project_id = ? WHERE id = ?"""
+            cur = self.con.cursor()
+            cur.execute(req, (project_id, recs[0]["tid"]))
+            self.con.commit()
+        return recs
 
 
 def pretty(d, indent=0):

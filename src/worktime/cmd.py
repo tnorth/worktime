@@ -427,6 +427,8 @@ class WorkCmd(cmd2.Cmd):
             # Provide options
             if self.cmd_parser.todo_actions[last_option]["type"] == ArgType.Final:
                 return []
+            if not self.cmd_parser.todo_actions[last_option]["complete"]:
+                return []
             items = self.cmd_parser.todo_actions[last_option]["complete"]()
             sel_items = [k for k in items
                         if k.startswith(line[begidx:endidx])

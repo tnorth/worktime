@@ -257,6 +257,7 @@ class CmdParser:
             "list": {"complete": None, "type": ArgType.Final},
             "opened": {"complete": None, "type": ArgType.Final},
             "closed": {"complete": None, "type": ArgType.Final},
+            "dueonly": {"complete": None, "type": ArgType.Final},
             "add": {"complete": None,
                        "type": ArgType.String,
                      },
@@ -267,6 +268,7 @@ class CmdParser:
             "rm": {"complete": self.get_todo_idx,
                        "type": ArgType.String,
                      },
+            "done": {"complete": None, "type": ArgType.Final},
         }
 
 
@@ -1127,6 +1129,10 @@ class CmdParser:
             todo_list = format_todos(self.db.get_todos(closed_only=True), show=('due', 'opened', 'closed'))
             return do_return(success=True, output=todo_list.get_string())
 
+        if 'dueonly' in proc_args:
+            todo_list = format_todos(self.db.get_todos(closed_only=False, opened_only=True, due_only=True), show=('due', 'opened'))
+            return do_return(success=True, output=todo_list.get_string())
+
         elif 'add' in proc_args:
             due_time = None
             project_id = None
@@ -1154,16 +1160,29 @@ class CmdParser:
             return do_return(success=True, notify="Added ToDo")
 
         elif 'rm' in proc_args:
-            pass
+            ids = proc_args['rm']
+            recs = self.db.delete_todos([int(ids),])
+            return do_return(success=True, notify="Deleted item:\n{}".format(format_todos(recs, show=('due', 'opened', 'closed'))))
 
         elif 'id' in proc_args:
+            try:
+                id_ = int(proc_args["id"])
+            except:
+                return do_return(success=False, error="Invalid id '{}'".format(proc_args['id']))
             if 'edit' in proc_args:
                 pass
             elif 'done' in proc_args:
-                # Update done_ts
-                pass
+                recs = self.db.close_todo(id_, done_ts=datetime.datetime.now())
+                if len(recs) == 1:
+                    return do_return(success=True, notify="Closed item:\n{}".format(format_todos(recs, show=('due', 'opened', 'closed'))))
             elif 'project' in proc_args:
-                pass
+                if proc_args['project'] in projs_byname:
+                    project_id = projs_byname[proc_args['project']]
+                else:
+                    return do_return(success=False, error="Unknown project: '{}'".format(proc_args["project"]))
+                recs = self.db.update_todo_project(id_, project_id=project_id)
+                if len(recs) == 1:
+                    return do_return(success=True, notify="Updated todo was:\n{}".format(format_todos(recs, show=('due', 'opened', 'closed'))))
             else:
                 pass
 
