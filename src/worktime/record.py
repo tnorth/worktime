@@ -1119,7 +1119,7 @@ class CmdParser:
             proc_args = {'list':None}
 
         if 'list' in proc_args:
-            todo_list = format_todos(self.db.get_todos(), show=('due', 'opened', 'closed'))
+            todo_list = format_todos(self.db.get_todos(opened_only=True), show=('due', 'opened'))
             return do_return(success=True, output=todo_list.get_string())
 
         if 'opened' in proc_args:
