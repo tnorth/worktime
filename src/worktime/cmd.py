@@ -22,6 +22,8 @@ from prettytable import PrettyTable
 from collections import Counter
 from cmd2 import (
     ansi,
+    Fg,
+    Bg,
 )
 from typing import (
     List,
@@ -64,7 +66,7 @@ class WorkCmd(cmd2.Cmd):
     @typechecked
     def feedback(self, msg: str) -> None:
         """Wraps pfeedback, adds color"""
-        self.pfeedback(ansi.style(msg, fg='bright_black'))
+        self.pfeedback(ansi.style(msg, fg=Fg.LIGHT_GRAY))
 
     @typechecked
     def print_output(self, cmd_res: dict) -> None:

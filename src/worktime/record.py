@@ -22,6 +22,8 @@ from typing import (
 )
 from cmd2 import (
     ansi,
+    Fg,
+    Bg,
 )
 from enum import Enum
 import datetime
@@ -69,7 +71,7 @@ def format_records(recs: List[Sequence], existing_table: PrettyTable=None) -> Pr
     for i in recs:
         row = list(i)
         if row[3] == None: # In progress
-            row[3] = ansi.style("In progress", fg="red")
+            row[3] = ansi.style("In progress", fg=Fg.RED)
             row[4] = ""
         
         t.add_row(row)
@@ -277,9 +279,9 @@ class CmdParser:
         ongoing = self.db.get_ongoing_projects()
         unassigned = " [unassigned]" if len(ongoing) > 0 and ongoing[0]["pid"] == 1 else ""
         if len(ongoing) > 0:
-            return ansi.style("(wt{}) ".format(unassigned), fg='yellow')
+            return ansi.style("(wt{}) ".format(unassigned), fg=Fg.YELLOW)
         else:
-            return ansi.style("(wt{}) ".format(unassigned), fg='green')
+            return ansi.style("(wt{}) ".format(unassigned), fg=Fg.GREEN)
 
     @typechecked
     def get_project_list(self) -> List[str]:
@@ -701,7 +703,7 @@ class CmdParser:
             if len(non_assigned_idx) > 0:
                 msg = ansi.style("Warning: record {} was not attributed to a project!" \
                         "Use `edit <record_id> project <project_name>` to provide a project name"\
-                        .format(", ".join([str(k) for k in non_assigned_idx])), fg='yellow')
+                        .format(", ".join([str(k) for k in non_assigned_idx])), fg=Fg.YELLOW)
             
             # Add the new task
             _ = self.db.insert_record(project_id, start_time, end_time)
@@ -709,7 +711,7 @@ class CmdParser:
             ret = "Closed overlapping ongoing task which was: {}\n".format(", ".join([str(k) for k in idx])) \
                     + format_records(overlaps).get_string() + "\n"\
                     + ansi.style("\nInserted new record for project {} from {} to {}"\
-                                    .format(project_name, start_time, end_time), fg='green')
+                                    .format(project_name, start_time, end_time), fg=Fg.GREEN)
             ret = ret + "\n" + msg if msg else ret
             return do_return(success=True, notify=ret)
 
@@ -899,14 +901,14 @@ class CmdParser:
         for k, item in enumerate(data):
             # Check if item[1] has a parent
             if tree_s[item[0]]["parent"] is None:
-                data[k][1] = ansi.style(data[k][1], fg='green')
+                data[k][1] = ansi.style(data[k][1], fg=Fg.GREEN)
             else:
                 subprojs = data[k][1].split(".")
                 subproj = subprojs[-1]
                 subproj = (len(data[k][1]) - len(subproj) - len(subprojs)) * " " + "└─" + subproj
                 data[k][1] = subproj
             if data[k][-1]:
-                data[k][2] = ansi.style(data[k][2], fg='yellow')
+                data[k][2] = ansi.style(data[k][2], fg=Fg.YELLOW)
 
         for k in data:
             t.add_row(k[:-1])
