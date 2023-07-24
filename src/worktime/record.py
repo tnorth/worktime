@@ -856,9 +856,16 @@ class CmdParser:
                     else:
                         start_date = proc_args["from"]
 
-                end_date = today + datetime.timedelta(days=1)   
-            if "for" in proc_args:
-                end_date = start_date + proc_args["for"]
+                end_date = today + datetime.timedelta(days=1)
+        ret, given_end_time_or_msg = self.find_end_time(proc_args, start_date)
+        if ret:
+            if given_end_time_or_msg:
+                if isinstance(given_end_time_or_msg, datetime.timedelta):
+                    end_date = datetime.datetime.now() + given_end_time_or_msg
+                else:
+                    end_date = given_end_time_or_msg
+        else:
+            return do_return(success=False, error=given_end_time_or_msg)
 
         items = self.db.get_period_stats(start_date, end_date)
 
