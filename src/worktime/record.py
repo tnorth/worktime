@@ -832,6 +832,48 @@ class CmdParser:
         ret = "Showing from {} to {}".format(start_date, end_date) + "\n"
         ret += format_records(items).get_string()
         return do_return(success=True, output=ret)
+
+
+    @typechecked
+    def compute_stats(self, start_date: datetime.date, end_date: datetime.date, add_empty:bool=False) -> Tuple[List, int]:
+        """
+        Prepares an array of time spent per project in the given period.
+        Returns this array as well as the total time spent in seconds.
+        """
+        
+        # Get projects list
+        tree_s, tree_t, flat_tree, flat_tree_rev = self.db.get_project_tree()
+        items = self.db.get_period_stats(start_date, end_date)
+        data = []
+        # Total time spent
+        tot_duration = sum([k["duration"] for k in items])
+
+        # Stats per project
+        for proj_idx, _ in tree_s.items():
+            proj_children_recursive = self.db.get_children_list(tree_s, proj_idx)
+            duration = 0
+            is_sum_res = False
+            for item in items:
+                if item["pid"] == proj_idx:
+                    # print("Adding time for {} = {}".format(item[1], datetime.timedelta(seconds=item[2])))
+                    duration += item["duration"]
+            for item in items:
+                if item["pid"] in proj_children_recursive:
+                    is_sum_res = True
+                    # print("Adding time for child {} = {}".format(item[1], datetime.timedelta(seconds=item[2])))
+                    duration += item["duration"]
+            
+            proj_name = flat_tree[proj_idx]
+            if duration > 0 or add_empty:
+                # use https://mike42.me/blog/2018-06-make-better-cli-progress-bars-with-unicode-block-characters
+                data.append([proj_idx, proj_name, 
+                             "{:.2f}".format(duration / 3600.) + " h",
+                             rel_duration_bar(duration/tot_duration, 30), is_sum_res] )
+
+        # Sort by project name
+        data = natsorted(data, key=lambda x: x[1])
+        return data, tot_duration
+
     
     @typechecked
     def parse_stats(self, args: List[str]) -> dict:
@@ -880,43 +922,13 @@ class CmdParser:
         else:
             return do_return(success=False, error=given_end_time_or_msg)
 
-        items = self.db.get_period_stats(start_date, end_date)
-
         t = PrettyTable()
         t.field_names = ("Project ID", "Project", "Time spent", "Graph")
         t.align["Project"] = "l"
         t.align["Time spent"] = "l"
         t.align["Graph"] = "l"
 
-        data = []
-        # Total time spent
-        tot_duration = sum([k["duration"] for k in items])
-
-        # Stats per project
-        for proj_idx, _ in tree_s.items():
-            proj_children_recursive = self.db.get_children_list(tree_s, proj_idx)
-            duration = 0
-            is_sum_res = False
-            for item in items:
-                if item["pid"] == proj_idx:
-                    # print("Adding time for {} = {}".format(item[1], datetime.timedelta(seconds=item[2])))
-                    duration += item["duration"]
-            for item in items:
-                if item["pid"] in proj_children_recursive:
-                    is_sum_res = True
-                    # print("Adding time for child {} = {}".format(item[1], datetime.timedelta(seconds=item[2])))
-                    duration += item["duration"]
-            
-            proj_name = flat_tree[proj_idx]
-            if duration > 0:
-                # use https://mike42.me/blog/2018-06-make-better-cli-progress-bars-with-unicode-block-characters
-                data.append([proj_idx, proj_name, 
-                             "{:.2f}".format(duration / 3600.) + " h",
-                             rel_duration_bar(duration/tot_duration, 30), is_sum_res] )
-
-        # Sort by project name
-        data = natsorted(data, key=lambda x: x[1])
-
+        data, tot_duration = self.compute_stats(start_date, end_date, add_empty=False)
         # Color
         for k, item in enumerate(data):
             # Check if item[1] has a parent
