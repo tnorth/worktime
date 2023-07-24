@@ -219,9 +219,13 @@ class CmdParser:
                                 "complete": self.get_time_dummy, 
                                 "type": ArgType.Time,
                                 },
+                        # FIXME: no autocompletion for the following
                         "exact": {"complete": None,
                                   "type": ArgType.Final,
-                                 }
+                                 },
+                        "byweek": {"complete": None,
+                                   "type": ArgType.Final,
+                                  },
                         }
         # Actions for the show command
         self.stats_actions = self.show_actions
@@ -866,9 +870,10 @@ class CmdParser:
             proj_name = flat_tree[proj_idx]
             if duration > 0 or add_empty:
                 # use https://mike42.me/blog/2018-06-make-better-cli-progress-bars-with-unicode-block-characters
+                bar_duration = duration/tot_duration if not add_empty else 0
                 data.append([proj_idx, proj_name, 
                              "{:.2f}".format(duration / 3600.) + " h",
-                             rel_duration_bar(duration/tot_duration, 30), is_sum_res] )
+                             rel_duration_bar(bar_duration, 30), is_sum_res] )
 
         # Sort by project name
         data = natsorted(data, key=lambda x: x[1])
@@ -922,30 +927,92 @@ class CmdParser:
         else:
             return do_return(success=False, error=given_end_time_or_msg)
 
-        t = PrettyTable()
-        t.field_names = ("Project ID", "Project", "Time spent", "Graph")
-        t.align["Project"] = "l"
-        t.align["Time spent"] = "l"
-        t.align["Graph"] = "l"
+        
 
-        data, tot_duration = self.compute_stats(start_date, end_date, add_empty=False)
-        # Color
-        for k, item in enumerate(data):
-            # Check if item[1] has a parent
-            if tree_s[item[0]]["parent"] is None:
-                data[k][1] = ansi.style(data[k][1], fg=Fg.GREEN)
-            else:
-                subprojs = data[k][1].split(".")
-                subproj = subprojs[-1]
-                subproj = (len(data[k][1]) - len(subproj) - len(subprojs)) * " " + "└─" + subproj
-                data[k][1] = subproj
-            if data[k][-1]:
-                data[k][2] = ansi.style(data[k][2], fg=Fg.YELLOW)
+        def format_table(data):
+            for k, item in enumerate(data):
+                # Check if item[1] has a parent
+                if tree_s[item[0]]["parent"] is None:
+                    data[k][1] = ansi.style(data[k][1], fg=Fg.GREEN)
+                else:
+                    subprojs = data[k][1].split(".")
+                    subproj = subprojs[-1]
+                    subproj = (len(data[k][1]) - len(subproj) - len(subprojs)) * " " + "└─" + subproj
+                    data[k][1] = subproj
+                if data[k][-1]:
+                    data[k][2] = ansi.style(data[k][2], fg=Fg.YELLOW)
+            return data
 
-        for k in data:
-            t.add_row(k[:-1])
+        if 'byweek' in proc_args:
+            # Split total duration by week
+            week_start = start_date
+            data_per_week = []
+            start = start_date
+            field_names = ["Project ID", "Project"]
+            overall_duration = 0
+            while week_start < end_date:
+                week_start = start  # Compute but not use, restrict to start_date
+                week_end = week_start + datetime.timedelta(days=7 - week_start.weekday())
+                week_end = end_date if week_end > end_date else week_end
+                if week_end == week_start:
+                    break
+                data, tot_duration = self.compute_stats(week_start, week_end, add_empty=True)
+                overall_duration += tot_duration
+                data = format_table(data)
+                data.append(["Total", "[All projects]", "{:.2f} h".format(tot_duration / 3600.), str(datetime.timedelta(seconds=tot_duration))])
+                data_per_week.append(data)
+                field_name = "{} to {}".format(week_start.strftime("%d-%m"), week_end.strftime("%d-%m"))
+                field_names.append(field_name)
+                start = week_end
 
-        t.add_row(("Total", "[All projects]", "{:.2f} h".format(tot_duration / 3600.), str(datetime.timedelta(seconds=tot_duration))))        
+            # Merge data
+            display_data = [k[:3] for k in data_per_week[0]] # Take complete first week, ignore last bool
+            # Append following weeks 
+            for i, data in enumerate(data_per_week[1:]):
+                for j, item in enumerate(data):
+                    for k in range(2,3):
+                        display_data[j].append(data[j][k])
+
+            to_be_discarded = []
+            proj_durations = []
+            for i, data in enumerate(display_data):
+                # Check if this line can be discarded
+                dur = sum([float(k[:-1]) for k in display_data[i][2:]])
+                if dur == 0:
+                    to_be_discarded.append(i)
+                else:
+                    proj_durations.append(dur)
+
+            display_data = [k for i, k in enumerate(display_data) if not i in to_be_discarded]
+            #data = format_table(data)
+            t = PrettyTable()
+            t.field_names = field_names + ["Total",]
+            for k in field_names[1:]:
+                t.align[k] = "l"
+            t.align["Project"] = "l"
+            t.align["Total"] = "l"
+            for i, k in enumerate(display_data):
+                if i < len(display_data) - 1:
+                    line = k + ['{}'.format(rel_duration_bar(proj_durations[i] * 3600 / overall_duration, 30))]
+                else:
+                    line = k + ['{:.2f} hours'.format(overall_duration / 3600.),]
+                t.add_row(line)
+
+        else:
+
+            data, tot_duration = self.compute_stats(start_date, end_date, add_empty=False)
+            # Color
+            data = format_table(data)
+            t = PrettyTable()
+            t.field_names = ("Project ID", "Project", "Time spent", "Graph")
+            t.align["Project"] = "l"
+            t.align["Time spent"] = "l"
+            t.align["Graph"] = "l"
+            for k in data:
+                t.add_row(k[:-1])
+
+            t.add_row(("Total", "[All projects]", "{:.2f} h".format(tot_duration / 3600.), str(datetime.timedelta(seconds=tot_duration))))   
+
         ret = "Stats from {} to {}".format(start_date, end_date) + "\n"
 
         return do_return(success=True, output=ret + t.get_string())
