@@ -203,6 +203,12 @@ class CmdParser:
                         "lastweek":{"complete": None,
                                   "type": ArgType.Final,
                                 },
+                        "thismonth":{"complete": None,
+                                  "type": ArgType.Final,
+                                },
+                        "lastmonth":{"complete": None,
+                                  "type": ArgType.Final,
+                                },
                         "from": {"complete": self.get_offset_dummy,
                                 "type": ArgType.Time,
                                 },
@@ -748,6 +754,13 @@ class CmdParser:
         elif 'thisweek' in args:
             start_date = today + datetime.timedelta(days=-datetime.date.today().weekday(), weeks=0)
             end_date = start_date + datetime.timedelta(days=5)
+        elif 'thismonth' in args:
+            start_date = today.replace(day=1)
+            end_date = start_date.replace(month=(start_date.month % 12) + 1, day=1)
+        elif 'lastmonth' in args:
+            lastmonth = today.month - 1 if today.month > 1 else 12
+            start_date = today.replace(month=lastmonth, day=1)
+            end_date = start_date.replace(month=today.month, day=1)
        
         return start_date, end_date
 
