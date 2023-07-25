@@ -88,6 +88,8 @@ See what you have created:
 # Specify a start date/time
 #  supported syntax example: 9:00, 2020-04-15_9:10
 (wt) work on ProjectName at 10:05
+# Log work for a past time period
+(wt) work on ProjectName.Subproject1 at 10:00 until 12:30
 ```
 
 ## Display
@@ -103,7 +105,7 @@ Showing from 2021-04-15 00:00:00 to 2021-04-16 00:00:00
 +----+-------------+---------------------+---------------------+----------+
 | 1  | ProjectName | 2021-04-15 10:41:26 | 2021-04-15 12:41:26 | 1:00:00  |
 +----+-------------+---------------------+---------------------+----------+
-# Known aguments: today, yesterday, thisweek, lastweek
+# Known aguments: today, yesterday, thisweek, lastweek, thismonth, lastmonth
 (wt) show thisweek
 # (Similar output)
 # Use `from` and `for` with a duration
@@ -125,7 +127,7 @@ Showing from 2021-04-15 00:00:00 to 2021-04-16 00:00:00
 +----+-------------------------+
 ```
 
-### Show period summary
+### Show period summary (stats)
 
 ```
 # no argument => thisweek
@@ -140,6 +142,27 @@ Showing from 2021-04-15 00:00:00 to 2021-04-16 00:00:00
 # Specify period
 # See show command for usage
 (wt) stats from -1w for 1d
+# Stats thismonth
+Stats from 2023-07-01 00:00:00 to 2023-08-01 00:00:00
++------------+----------------+------------+-------------------------+
+| Project ID | Project        | Time spent | Graph                   |
++------------+----------------+------------+-------------------------+
+|     4      | ProjectName    | 64.38 h    | ██████████████████████▍ |
+|     12     | Project2       | 15.62 h    | █████▍                  |
+|     13     | Project3       | 6.19 h     | ██▏                     |
+|   Total    | [All projects] | 86.18 h    | 3 days, 14:11:01        |
++------------+----------------+------------+-------------------------+
+# Stats by week
+(wt) stats thismonth byweek
+Stats from 2023-07-01 00:00:00 to 2023-08-01 00:00:00
++------------+----------------+----------------+----------------+----------------+----------------+----------------+----------------+-------------------------+
+| Project ID | Project        | 01-07 to 03-07 | 03-07 to 10-07 | 10-07 to 17-07 | 17-07 to 24-07 | 24-07 to 31-07 | 31-07 to 01-08 | Total                   |
++------------+----------------+----------------+----------------+----------------+----------------+----------------+----------------+-------------------------+
+|     4      | ProjectName    | 0.00 h         | 36.45 h        | 27.93 h        | 0.00 h         | 0.00 h         | 0.00 h         | ██████████████████████▍ |
+|     12     | Project1       | 0.00 h         | 3.32 h         | 3.70 h         | 0.00 h         | 8.59 h         | 0.00 h         | █████▍                  |
+|     13     | Project2       | 0.00 h         | 0.00 h         | 6.19 h         | 0.00 h         | 0.00 h         | 0.00 h         | ██▏                     |
+|   Total    | [All projects] | 0.00 h         | 39.77 h        | 37.82 h        | 0.00 h         | 8.59 h         | 0.00 h         | 86.18 hours             |
++------------+----------------+----------------+----------------+----------------+----------------+----------------+----------------+-------------------------+
 # etc.
 ```
 
