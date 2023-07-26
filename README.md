@@ -82,11 +82,15 @@ See what you have created:
 ```
 # Start now, in progress
 (wt) work on ProjectName
-# Specify a duration
+# ... after some time, when you stop working on that project:
+(wt) work done
+# ... or start working on something else, it will close the current record
+(wt) work on OtherProject
+# Log work but already specify a duration
 #  support syntax example: 2h, 2h10m30s, 1:00 (1 minute), 
 (wt) work on ProjectName for 2h
-# Specify a start date/time
-#  supported syntax example: 9:00, 2020-04-15_9:10
+# Specify a start date/time (when one forgets to log the work's start)
+# supported syntax example: 9:00, 2020-04-15_9:10
 (wt) work on ProjectName at 10:05
 # Log work for a past time period
 (wt) work on ProjectName.Subproject1 at 10:00 until 12:30
