@@ -163,7 +163,8 @@ class CmdParser:
     def __init__(self, db: db.RecordDb) -> None:
         # Known commands
         self.cmds = {"work": self.parse_work, "show": self.parse_show, 
-                     "edit": self.parse_edit, "rm": self.parse_delete,
+                     "edit": self.parse_edit, "split": self.parse_split,
+                     "rm": self.parse_delete,
                      "stats": self.parse_stats, "project": self.parse_project,
                      "todo": self.parse_todo, }
         # Path to the record database
@@ -236,6 +237,16 @@ class CmdParser:
             }
         # Actions for the edit command
         self.edit_actions = {
+            "id": {"complete": self.get_entries_idx,
+                   "type": ArgType.String},
+            "project": {"complete": self.get_project_list,
+                       "type": ArgType.String },
+            "from": {"complete": self.get_time_dummy,
+                     "type": ArgType.Time},
+            "to": {"complete": self.get_time_dummy,
+                     "type": ArgType.Time},
+        }
+        self.split_actions = {
             "id": {"complete": self.get_entries_idx,
                    "type": ArgType.String},
             "project": {"complete": self.get_project_list,
@@ -1089,7 +1100,85 @@ class CmdParser:
         # Update
         self.db.update_record(edit_id, new_start=new_start_time, new_end=new_end_time, new_project_id=project_id)
         return do_return(success=True, notify="Updated record {}".format(edit_id))
-    
+
+    @typechecked
+    def parse_split(self, args: List[str]) -> dict:
+        '''
+                Parse provided split command, and execute it.
+                Returns: an information message
+
+                'from' or 'to' are mutually exclusive and their time must fall within the record to be splitted.
+
+                Known format:
+                split id <record> [project] [from <start time>] [to <end time>]
+
+                Example:
+                split id 10 from 10:00 to 11h
+                '''
+
+        ret, proc_args, msg = self.interpret_args(args, self.edit_actions)
+        if not ret:
+            return do_return(success=False, error=msg)
+
+        new_start_time = None
+        new_end_time = None
+        if not "id" in proc_args:
+            return do_return(success=False, error="Required parameter `id` is missing.")
+        else:
+            edit_id = int(proc_args["id"])
+        project_id = None
+        if "project" in proc_args:
+            # Re-assign to a different project
+            _, _, _, proj_to_id = self.db.get_project_tree()
+            if proc_args["project"] in proj_to_id:
+                project_id = proj_to_id[proc_args["project"]]
+            else:
+                return do_return(success=False, error="Invalid project: {}".format(proc_args["project"]))
+
+        # Search for the boundaries of the current item
+        record = self.db.get_records_by_id([edit_id,])
+
+        curr_start = datetime.datetime.fromtimestamp(record[0]["start"])
+        curr_end = datetime.datetime.fromtimestamp(record[0]["end"])
+
+        split_date = None
+        if "from" in proc_args and "to" in proc_args:
+            do_return(success=False, error="split: 'to' and 'from' are mutually exclusive!")
+        if "from" in proc_args:
+            # Edit start time
+            if isinstance(proc_args["from"], datetime.timedelta):
+                do_return(success=False, error="Split does not support relative times (relative to what?)")
+            else:
+                new_start_time = proc_args["from"]
+                if new_start_time > curr_start and new_start_time < curr_end:
+                    # Can be split
+                    split_date = new_start_time
+                else:
+                    do_return(success=False, error="Invalid from date: not within the record to edit")
+
+        if "to" in proc_args:
+            # Edit end time
+            if isinstance(proc_args["to"], datetime.timedelta):
+                do_return(success=False, error="Split does not support relative times (relative to what?)")
+            else:
+                new_end_time = proc_args["to"]
+                if curr_start < new_end_time < curr_end:
+                    # Can be split
+                    split_date = new_end_time
+                else:
+                    do_return(success=False, error="Invalid to date: not within the record to edit")
+
+
+
+        # Update end of the current record.
+        self.db.update_record(edit_id, new_end=split_date, new_project_id=project_id)
+        # Insert a new record at the split point
+        # if project_id is None take it from the current record
+        if project_id is None:
+            project_id = record[0]["pid"]
+        self.db.insert_record(project_id, split_date, curr_end)
+        return do_return(success=True, notify="Updated record {}".format(edit_id))
+
     @typechecked
     def parse_delete(self, args: List[str]) -> dict:
         '''

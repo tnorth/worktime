@@ -158,6 +158,18 @@ class WorkCmd(cmd2.Cmd):
         '''
         ret = self.cmd_parser.parse_cmd("edit", args.split(" "))
         self.print_output(ret)
+        
+    @typechecked
+    def do_split(self, args: cmd2.parsing.Statement) -> None :
+        '''
+        Process a split command
+
+        Possible usage:
+            split id 42 from 18:00 project Foobar
+
+        '''
+        ret = self.cmd_parser.parse_cmd("split", args.split(" "))
+        self.print_output(ret)
 
     @typechecked
     def complete_edit(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
@@ -167,6 +179,33 @@ class WorkCmd(cmd2.Cmd):
         last_option = self.last_option(line, begidx, endidx)
 
         # Complete values for option "id", "project", "from", "to" 
+        #self.poutput("Last option: {}, begidx: {}, endidx: {}".format(last_option, begidx, endidx))
+        if last_option in self.cmd_parser.edit_actions:
+            # Provide options
+            items = self.cmd_parser.edit_actions[last_option]["complete"]()
+            sel_items = [k for k in items
+                        if k.startswith(line[begidx:endidx])
+                        ]
+            return sel_items
+
+        # Otherwise suggest options
+        edit_act = Counter(self.cmd_parser.edit_actions.keys())
+        prev_args = Counter(line.split(" "))
+        #print(prev_args)
+        if prev_args:
+            avail_options = list(edit_act - prev_args)
+            return [k for k in avail_options if k.startswith(line[begidx:endidx])]
+        else:
+            return self.cmd_parser.edit_actions["complete"]
+
+    @typechecked
+    def complete_split(self, text: str, line: str, begidx: int, endidx: int) -> List[str]:
+        '''
+        Autocompletion for the split command
+        '''
+        last_option = self.last_option(line, begidx, endidx)
+
+        # Complete values for option "id", "project", "from", "to"
         #self.poutput("Last option: {}, begidx: {}, endidx: {}".format(last_option, begidx, endidx))
         if last_option in self.cmd_parser.edit_actions:
             # Provide options
