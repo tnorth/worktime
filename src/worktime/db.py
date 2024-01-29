@@ -32,7 +32,7 @@ except ImportError:
         return inner
 
 @typechecked
-def to_unixtime(dt: datetime.date):
+def to_unixtime(dt: datetime.date) -> int:
     """Convert datetime to timestamp, dropping second fractions"""
     return int(datetime.datetime.timestamp(dt))
 
@@ -289,9 +289,9 @@ class RecordDb:
         if desc:
             req += " DESC"
         cur = self.con.cursor()
-        start, end = to_unixtime(start), \
+        start_, end_ = to_unixtime(start), \
                      to_unixtime(end)
-        res = cur.execute(req, (start, end)).fetchall()
+        res = cur.execute(req, (start_, end_)).fetchall()
         return self.format_record([dict(k) for k in res])
 
     @typechecked

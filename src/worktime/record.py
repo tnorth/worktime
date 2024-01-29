@@ -57,7 +57,7 @@ class ArgType(Enum):
 # NOTE: to improve.
 # We assume here records of (record_id, project_id, start_time, end_time, duration)
 @typechecked
-def format_records(recs: List[Sequence], existing_table: PrettyTable=None) -> PrettyTable:
+def format_records(recs: List[Sequence], existing_table: Optional[Union[PrettyTable, None]]=None) -> PrettyTable:
     if existing_table is not None:
         t = existing_table
     else:
