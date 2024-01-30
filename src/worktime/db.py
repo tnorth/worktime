@@ -344,9 +344,9 @@ class RecordDb:
                  ORDER BY r.start 
                 """
         cur = self.con.cursor()
-        start, end = to_unixtime(start), \
+        start_, end_ = to_unixtime(start), \
                      to_unixtime(end)
-        res = cur.execute(req, (start, end)).fetchall()
+        res = cur.execute(req, (start_, end_)).fetchall()
         return [dict(k) for k in res]
 
     @typechecked
